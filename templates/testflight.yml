@@ -13,7 +13,7 @@ permissions:
 jobs:
   # --- 例1: Swift / SwiftUI のアプリ（.xcodeproj だけ） ---
   ios:
-    uses: kajisho5/runway/.github/workflows/apple-testflight.yml@v1
+    uses: kajisho5/runway/.github/workflows/apple-testflight.yml@main
     with:
       bundle_id: com.example.myapp
       project: MyApp.xcodeproj
@@ -24,7 +24,7 @@ jobs:
 
   # --- 例2: Expo / React Native のアプリ（ios/ をコミット済み） ---
   # ios:
-  #   uses: kajisho5/runway/.github/workflows/apple-testflight.yml@v1
+  #   uses: kajisho5/runway/.github/workflows/apple-testflight.yml@main
   #   with:
   #     bundle_id: com.example.myapp
   #     workspace: ios/MyApp.xcworkspace
@@ -35,7 +35,7 @@ jobs:
 
   # --- 例3: Secrets の名前が違うリポ（crosspoint 方式の APPSTORE_* など）から使う ---
   # ios:
-  #   uses: kajisho5/runway/.github/workflows/apple-testflight.yml@v1
+  #   uses: kajisho5/runway/.github/workflows/apple-testflight.yml@main
   #   with:
   #     bundle_id: com.example.myapp
   #     workspace: MyApp.xcworkspace

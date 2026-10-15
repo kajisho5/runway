@@ -4,6 +4,9 @@
 #   import-crosspoint crosspoint が ci/signing に持っている既存の証明書を hanger へ移す（新規発行しない。上限に当たらない）
 #   create            新しい鍵と証明書を発行して hanger に置く（Apple 側に証明書が 2 枚増える）
 #   revoke-and-create API で作った証明書を全部失効してから create（上限に当たったとき用。crosspoint の ci/signing も使えなくなる）
+#   create-developer-id Mac 向け配布（プラグイン・アプリの公証）用の Developer ID Application 証明書を作る。
+#                     API で作れなかった場合は CSR を hanger に置くので、developer.apple.com で手動発行して
+#                     hanger の signing/developer_id_application.cer としてアップロードする
 name: apple-signing
 
 on:
@@ -11,7 +14,7 @@ on:
     inputs:
       action:
         type: choice
-        options: [status, import-crosspoint, create, revoke-and-create]
+        options: [status, import-crosspoint, create, revoke-and-create, create-developer-id]
         default: status
       import_from:
         description: "import-crosspoint の取り込み元（owner/repo:dir）"
@@ -80,7 +83,14 @@ jobs:
               openssl x509 -inform DER -in "$RUNNER_TEMP/hanger/signing/$f.cer" -noout -subject -enddate
             done
           else
-            echo "（まだ無い）"
+            echo "（iOS 用はまだ無い）"
+          fi
+          if [ -f "$RUNNER_TEMP/hanger/signing/developer_id_application.cer" ]; then
+            openssl x509 -inform DER -in "$RUNNER_TEMP/hanger/signing/developer_id_application.cer" -noout -subject -enddate
+          elif [ -f "$RUNNER_TEMP/hanger/signing/devid.csr" ]; then
+            echo "Developer ID: CSR だけある（developer.apple.com で証明書を発行して developer_id_application.cer を置く）"
+          else
+            echo "（Developer ID はまだ無い）"
           fi
           echo "== Apple 側の証明書 =="
           asc certs-list
@@ -130,6 +140,42 @@ jobs:
           rm -rf "$d"
           echo "RW_COMMIT_MSG=signing: 新しい鍵と証明書を発行" >> "$GITHUB_ENV"
 
+      - name: Create Developer ID certificate
+        if: inputs.action == 'create-developer-id'
+        shell: bash
+        run: |
+          set -euo pipefail
+          h="$RUNNER_TEMP/hanger/signing"; d="$RUNNER_TEMP/new"; mkdir -p "$d" "$h"
+          if [ -f "$h/developer_id_application.cer" ] && openssl x509 -inform DER -in "$h/developer_id_application.cer" -noout -checkend 2592000; then
+            echo "Developer ID 証明書は既にあり、期限も 30 日以上ある。作り直す場合は hanger の signing/developer_id_application.cer を消してから実行"
+            openssl x509 -inform DER -in "$h/developer_id_application.cer" -noout -subject -enddate
+            exit 0
+          fi
+          openssl genrsa -out "$d/devid.key" 2048
+          openssl req -new -key "$d/devid.key" -subj "/CN=runway Developer ID/O=GitHub Actions" -out "$d/devid.csr"
+          asc encrypt-key "$d/devid.key" "$h/devid.key.enc"
+          set +e
+          asc cert-create DEVELOPER_ID_APPLICATION_G2,DEVELOPER_ID_APPLICATION "$d/devid.csr" "$h/developer_id_application.cer"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            rm -f "$h/devid.csr"
+            echo "RW_COMMIT_MSG=signing: Developer ID Application 証明書を発行" >> "$GITHUB_ENV"
+          else
+            cp "$d/devid.csr" "$h/devid.csr"
+            rm -f "$h/developer_id_application.cer"
+            echo "RW_COMMIT_MSG=signing: Developer ID 用の鍵と CSR を作成（証明書は手動発行待ち）" >> "$GITHUB_ENV"
+            {
+              echo "### Developer ID 証明書は API で作れなかった"
+              echo ""
+              echo "1. hanger の signing/devid.csr をダウンロード"
+              echo "2. https://developer.apple.com/account/resources/certificates/add → Developer ID Application → CSR をアップロード → 証明書をダウンロード"
+              echo "3. ダウンロードした .cer を hanger の signing/ に developer_id_application.cer という名前でアップロード"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::API で Developer ID 証明書を作れなかった。手順は実行結果の Summary を参照"
+          fi
+          rm -rf "$d"
+
       - name: Commit to hanger
         if: inputs.action != 'status'
         shell: bash
@@ -142,7 +188,8 @@ jobs:
           runway の apple-signing が管理する、全アプリ共通の署名用証明書。手で編集しない。
 
           - `ios.key.enc` — 秘密鍵（AES-256-CBC / PBKDF2。パスフレーズは runway の Secret から導出。平文はどこにも無い）
-          - `development.cer` / `distribution.cer` — Apple Development / Apple Distribution 証明書（DER）
+          - `development.cer` / `distribution.cer` — Apple Development / Apple Distribution 証明書（DER）。iOS などの TestFlight 用
+          - `devid.key.enc` / `developer_id_application.cer` — Developer ID Application（Mac 向け配布・公証用）。`devid.csr` があるのは証明書の手動発行待ち
 
           期限切れ（1 年）や漏えい時は runway の Actions → apple-signing を `create` で実行。
           EOF

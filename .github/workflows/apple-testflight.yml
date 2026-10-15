@@ -164,7 +164,7 @@ jobs:
             asc.py check <bundle id>                 鍵の形式・API 認証・アプリ記録・Admin 権限を確認
             asc.py next-build <bundle id> <platform> TestFlight 上の最大ビルド番号 + 1 を出力
             asc.py certs-list                        証明書一覧
-            asc.py cert-create <DEVELOPMENT|DISTRIBUTION> <csr.pem> <out.cer>
+            asc.py cert-create <TYPE[,TYPE...]> <csr.pem> <out.cer>   先頭から順に試す。全部ダメなら終了コード 3
             asc.py revoke-all                        API で作った DEVELOPMENT / DISTRIBUTION 証明書をすべて失効
             asc.py decrypt-key <in.enc> <out.key>    署名用秘密鍵を復号（.p8 から導くパスフレーズ候補を順に試す）
             asc.py encrypt-key <in.key> <out.enc>    署名用秘密鍵を暗号化（標準パスフレーズ）
@@ -345,15 +345,27 @@ jobs:
                         f"{a.get('displayName') or a.get('name') or ''}")
 
 
-          def cmd_cert_create(cert_type, csr_path, out_path):
+          def cmd_cert_create(cert_types, csr_path, out_path):
+              """cert_types はカンマ区切り。先頭から順に試し、最初に作れたものを使う。"""
               with open(csr_path) as f:
                   csr = f.read()
-              _, res = api("POST", "/v1/certificates",
-                           {"data": {"type": "certificates", "attributes": {"certificateType": cert_type, "csrContent": csr}}})
-              a = res["data"]["attributes"]
-              with open(out_path, "wb") as f:
-                  f.write(base64.b64decode(a["certificateContent"]))
-              print(f"{cert_type} 証明書を作成: {res['data']['id']}（期限 {(a.get('expirationDate') or '')[:10]}）")
+              types = [t for t in cert_types.split(",") if t]
+              for i, cert_type in enumerate(types):
+                  last = i == len(types) - 1
+                  status, res = api("POST", "/v1/certificates",
+                                    {"data": {"type": "certificates",
+                                              "attributes": {"certificateType": cert_type, "csrContent": csr}}},
+                                    tolerate=True)
+                  if status in (200, 201):
+                      a = res["data"]["attributes"]
+                      with open(out_path, "wb") as f:
+                          f.write(base64.b64decode(a["certificateContent"]))
+                      print(f"{cert_type} 証明書を作成: {res['data']['id']}（期限 {(a.get('expirationDate') or '')[:10]}）")
+                      return
+                  print(f"{cert_type}: 作成できない（HTTP {status}）")
+                  print(str(res)[:2000])
+                  if last:
+                      sys.exit(3)
 
 
           def cmd_revoke_all():

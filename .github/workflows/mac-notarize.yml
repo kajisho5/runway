@@ -1,0 +1,643 @@
+# Mac 向けのプラグイン（VST3 / AU。AAX は PACE の署名が別途必要なので対象外）やアプリを、GitHub の Mac ランナーでビルド → Developer ID 署名 →
+# Apple の公証（notarization）→ ステープル → .dmg / .zip にまとめるまでを行う共通ワークフロー（Mac 不要）。
+# 公証は App Store Connect API のチームキーで行う（notarytool --key / --key-id / --issuer）。
+# 署名用の Developer ID Application 証明書は hanger の signing/（runway の apple-signing → create-developer-id で用意）。
+# 呼び出し例は templates/mac-plugin.yml。
+name: mac-notarize
+
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: "配布物の名前（例: MODEL600）。<name>-<version>.dmg になる"
+        type: string
+        required: true
+      version:
+        description: "配布物のバージョン表記。空ならタグ名（v 抜き）か短いコミット ID"
+        type: string
+        default: ""
+      build:
+        description: "ビルドするシェル（例: cmake -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES='arm64;x86_64' && cmake --build build --config Release）"
+        type: string
+        required: true
+      products:
+        description: "署名して配る成果物のパス（glob 可・改行区切り）。例: build/**/Release/VST3/*.vst3"
+        type: string
+        required: true
+      package:
+        description: "dmg | zip"
+        type: string
+        default: dmg
+      entitlements:
+        description: "署名に使う entitlements ファイル（任意、リポ内のパス）"
+        type: string
+        default: ""
+      readme:
+        description: "配布物に同梱するテキスト（任意、リポ内のパス。インストール方法など）"
+        type: string
+        default: ""
+      working_directory:
+        type: string
+        default: .
+      xcode:
+        type: string
+        default: "26"
+      runner:
+        type: string
+        default: macos-15
+      hanger_repo:
+        description: "証明書リポ。空なら <owner>/hanger"
+        type: string
+        default: ""
+    secrets:
+      ASC_KEY_ID:
+        required: true
+      ASC_ISSUER_ID:
+        required: true
+      ASC_KEY_P8_BASE64:
+        required: true
+      APPLE_TEAM_ID:
+        required: true
+      MATCH_GIT_TOKEN:
+        description: "hanger を読めるトークン"
+        required: true
+      SIGNING_KEY_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  notarize:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 90
+    env:
+      RW_NAME: ${{ inputs.name }}
+      RW_VERSION: ${{ inputs.version }}
+      RW_BUILD: ${{ inputs.build }}
+      RW_PRODUCTS: ${{ inputs.products }}
+      RW_PACKAGE: ${{ inputs.package }}
+      RW_ENTITLEMENTS: ${{ inputs.entitlements }}
+      RW_README: ${{ inputs.readme }}
+      RW_XCODE: ${{ inputs.xcode }}
+      RW_HANGER_REPO: ${{ inputs.hanger_repo || format('{0}/hanger', github.repository_owner) }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          case "$RW_PACKAGE" in dmg|zip) ;; *) echo "::error::package は dmg か zip"; exit 1 ;; esac
+          for k in ASC_KEY_ID ASC_ISSUER_ID APPLE_TEAM_ID; do
+            v="${!k}"; v="$(printf '%s' "$v" | tr -d '[:space:]')"
+            [ -n "$v" ] || { echo "::error::Secret $k が未登録"; exit 1; }
+            echo "$k=$v" >> "$GITHUB_ENV"
+          done
+          v="$RW_VERSION"
+          if [ -z "$v" ]; then
+            if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then v="${GITHUB_REF_NAME#v}"; else v="${GITHUB_SHA:0:7}"; fi
+          fi
+          echo "RW_VER=$v" >> "$GITHUB_ENV"
+          echo "配布物: ${RW_NAME}-${v}.${RW_PACKAGE}"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install runway tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/runway"
+          python3 -m venv "$RUNNER_TEMP/runway/venv"
+          "$RUNNER_TEMP/runway/venv/bin/pip" install --quiet pyjwt cryptography
+          cat > "$RUNNER_TEMP/runway/asc.py" <<'PY'
+          # >>> asc.py (scripts/asc.py から scripts/embed.py で生成。直接編集しない)
+          #!/usr/bin/env python3
+          """runway 用 App Store Connect API ツール（Python 3 + pyjwt + cryptography、署名鍵の暗号処理は openssl）。
+
+          API のエンドポイントとフィールドは Apple の App Store Connect API（OpenAPI 仕様）に準拠：
+            GET /v1/apps, GET /v1/users, GET /v1/builds,
+            GET/POST/DELETE /v1/certificates,
+            POST /v1/buildUploads, POST/PATCH /v1/buildUploadFiles, GET /v1/buildUploads/{id}
+          （アップロードと証明書の処理は kajisho5/crosspoint の .github/scripts/asc_upload.py / asc_certs.py で実績のあるもの）
+
+          使い方:
+            asc.py write-key                         環境変数の .p8 を $RUNNER_TEMP/keys/AuthKey_<KEY_ID>.p8 に書き出す
+            asc.py check <bundle id>                 鍵の形式・API 認証・アプリ記録・Admin 権限を確認
+            asc.py next-build <bundle id> <platform> TestFlight 上の最大ビルド番号 + 1 を出力
+            asc.py certs-list                        証明書一覧
+            asc.py cert-create <TYPE[,TYPE...]> <csr.pem> <out.cer>   先頭から順に試す。全部ダメなら終了コード 3
+            asc.py revoke-all                        API で作った DEVELOPMENT / DISTRIBUTION 証明書をすべて失効
+            asc.py decrypt-key <in.enc> <out.key>    署名用秘密鍵を復号（.p8 から導くパスフレーズ候補を順に試す）
+            asc.py encrypt-key <in.key> <out.enc>    署名用秘密鍵を暗号化（標準パスフレーズ）
+            asc.py upload <ipa> <bundle id> <version> <build> <platform>
+
+          環境変数:
+            ASC_KEY_ID, ASC_ISSUER_ID
+            ASC_KEY_P8_BASE64   .p8 の中身（PEM のまま、または base64）
+            SIGNING_KEY_PASSWORD（任意）署名用秘密鍵のパスフレーズ。無ければ .p8 から導出
+            RUNNER_TEMP
+          platform: ios | tvos | visionos
+          """
+
+          import base64
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import sys
+          import tempfile
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          API = "https://api.appstoreconnect.apple.com"
+          PLATFORMS = {"ios": "IOS", "tvos": "TV_OS", "visionos": "VISION_OS"}
+          MANAGED_CERT_TYPES = {"DEVELOPMENT", "DISTRIBUTION", "IOS_DEVELOPMENT", "IOS_DISTRIBUTION"}
+
+
+          def die(msg, code=1):
+              print(f"::error::{msg}")
+              sys.exit(code)
+
+
+          def env(name):
+              value = os.environ.get(name, "")
+              if not value.strip():
+                  die(f"環境変数 {name} が空（Secrets 未登録の可能性）")
+              return value
+
+
+          def p8_raw():
+              return env("ASC_KEY_P8_BASE64")
+
+
+          def p8_pem():
+              raw = p8_raw()
+              if "BEGIN PRIVATE KEY" in raw:
+                  pem = raw
+              else:
+                  try:
+                      pem = base64.b64decode("".join(raw.split())).decode()
+                  except Exception:
+                      die("ASC_KEY_P8_BASE64 が PEM でも base64 でもない")
+                  if "BEGIN PRIVATE KEY" not in pem:
+                      die("ASC_KEY_P8_BASE64 を base64 として読んだが PEM ではなかった")
+              return pem.replace("\r\n", "\n").strip() + "\n"
+
+
+          def key_path():
+              return os.path.join(env("RUNNER_TEMP"), "keys", f"AuthKey_{env('ASC_KEY_ID').strip()}.p8")
+
+
+          def token():
+              import jwt  # pyjwt
+
+              now = int(time.time())
+              return jwt.encode(
+                  {"iss": env("ASC_ISSUER_ID").strip(), "iat": now, "exp": now + 600, "aud": "appstoreconnect-v1"},
+                  p8_pem(),
+                  algorithm="ES256",
+                  headers={"kid": env("ASC_KEY_ID").strip(), "typ": "JWT"},
+              )
+
+
+          def api(method, path, body=None, tolerate=False):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(
+                  API + path, data=data, method=method,
+                  headers={"Authorization": f"Bearer {token()}", "Content-Type": "application/json"},
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as res:
+                      raw = res.read()
+                      return res.status, (json.loads(raw) if raw else {})
+              except urllib.error.HTTPError as e:
+                  text = e.read().decode(errors="replace")
+                  if tolerate:
+                      return e.code, text
+                  print(f"{method} {path.split('?')[0]} -> HTTP {e.code}")
+                  print(text[:4000])
+                  sys.exit(1)
+
+
+          def app_id(bundle_id):
+              q = urllib.parse.urlencode({"filter[bundleId]": bundle_id, "fields[apps]": "bundleId,name"})
+              _, body = api("GET", f"/v1/apps?{q}")
+              data = [a for a in body.get("data", []) if a["attributes"].get("bundleId") == bundle_id]
+              if not data:
+                  die(f"App Store Connect に Bundle ID {bundle_id} のアプリが無い（App Store Connect → アプリ → ＋ で作成）")
+              return data[0]["id"], data[0]["attributes"].get("name")
+
+
+          # ---------------------------------------------------------------- commands
+
+          def cmd_write_key():
+              path = key_path()
+              os.makedirs(os.path.dirname(path), exist_ok=True)
+              with open(path, "w") as f:
+                  f.write(p8_pem())
+              os.chmod(path, 0o600)
+              print(path)
+
+
+          def cmd_check(bundle_id):
+              import re
+
+              ok = True
+              for name, pattern in (("ASC_KEY_ID", r"[A-Z0-9]{10}"),
+                                    ("ASC_ISSUER_ID", r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"),
+                                    ("APPLE_TEAM_ID", r"[A-Z0-9]{10}")):
+                  v = env(name)
+                  good = re.fullmatch(pattern, v.strip()) is not None
+                  print(f"{name}: 形式 {'OK' if good else '不正'}" + ("（前後に空白あり。自動で除去する）" if v != v.strip() else ""))
+                  ok &= good
+              p8_pem()
+              print("ASC_KEY_P8_BASE64: PEM として読めた")
+              if not ok:
+                  die("Secrets の形式が不正（上の行を参照）")
+
+              aid, name = app_id(bundle_id)
+              print(f"App Store Connect のアプリ: {name}（{bundle_id}）")
+              status, _ = api("GET", "/v1/users?limit=1", tolerate=True)
+              if status == 200:
+                  print("API キーの権限: Admin 相当（OK）")
+              else:
+                  print(f"::warning::GET /v1/users -> HTTP {status}。API キーが Admin でない可能性（自動署名のプロファイル発行に Admin が必要）")
+
+
+          def cmd_next_build(bundle_id, platform):
+              aid, _ = app_id(bundle_id)
+              base = {"filter[app]": aid, "sort": "-uploadedDate", "limit": "200", "fields[builds]": "version"}
+              q = dict(base, **{"filter[preReleaseVersion.platform]": PLATFORMS.get(platform, "IOS")})
+              status, body = api("GET", "/v1/builds?" + urllib.parse.urlencode(q), tolerate=True)
+              if status != 200:
+                  status, body = api("GET", "/v1/builds?" + urllib.parse.urlencode(base), tolerate=True)
+              latest = 0
+              if status == 200:
+                  for b in body.get("data", []):
+                      v = str(b["attributes"].get("version") or "").split(".")[0]
+                      if v.isdigit():
+                          latest = max(latest, int(v))
+              else:
+                  print(f"::warning::ビルド一覧を取得できなかった（HTTP {status}）。1 から始める", file=sys.stderr)
+              print(latest + 1)
+
+
+          def list_certs():
+              out = []
+              path = "/v1/certificates?" + urllib.parse.urlencode(
+                  {"limit": 200, "fields[certificates]": "certificateType,displayName,name,expirationDate,serialNumber"})
+              while path:
+                  _, res = api("GET", path)
+                  out.extend(res.get("data", []))
+                  nxt = res.get("links", {}).get("next")
+                  path = nxt.replace(API, "") if nxt else None
+              return out
+
+
+          def cmd_certs_list():
+              certs = list_certs()
+              print(f"証明書 {len(certs)} 件")
+              print(f"{'id':<12} {'type':<20} {'expires':<12} name")
+              for c in certs:
+                  a = c["attributes"]
+                  print(f"{c['id']:<12} {a.get('certificateType', ''):<20} {(a.get('expirationDate') or '')[:10]:<12} "
+                        f"{a.get('displayName') or a.get('name') or ''}")
+
+
+          def cmd_cert_create(cert_types, csr_path, out_path):
+              """cert_types はカンマ区切り。先頭から順に試し、最初に作れたものを使う。"""
+              with open(csr_path) as f:
+                  csr = f.read()
+              types = [t for t in cert_types.split(",") if t]
+              for i, cert_type in enumerate(types):
+                  last = i == len(types) - 1
+                  status, res = api("POST", "/v1/certificates",
+                                    {"data": {"type": "certificates",
+                                              "attributes": {"certificateType": cert_type, "csrContent": csr}}},
+                                    tolerate=True)
+                  if status in (200, 201):
+                      a = res["data"]["attributes"]
+                      with open(out_path, "wb") as f:
+                          f.write(base64.b64decode(a["certificateContent"]))
+                      print(f"{cert_type} 証明書を作成: {res['data']['id']}（期限 {(a.get('expirationDate') or '')[:10]}）")
+                      return
+                  print(f"{cert_type}: 作成できない（HTTP {status}）")
+                  print(str(res)[:2000])
+                  if last:
+                      sys.exit(3)
+
+
+          def cmd_revoke_all():
+              targets = [c for c in list_certs()
+                         if c["attributes"].get("certificateType") in MANAGED_CERT_TYPES
+                         and (c["attributes"].get("displayName") or "") == "Created via API"]
+              if not targets:
+                  print("失効対象なし")
+                  return
+              for c in targets:
+                  status, text = api("DELETE", f"/v1/certificates/{c['id']}", tolerate=True)
+                  print(f"{c['id']}: {'失効' if status in (200, 204) else f'失敗 HTTP {status}'}")
+
+
+          def password_candidates():
+              """署名用秘密鍵のパスフレーズ候補。先頭が標準（新規暗号化に使う）。
+              crosspoint の signing.yml は sha256(printf '%s' "$APPSTORE_P8") を使うので、改行の有無違いも候補に入れる。"""
+              explicit = os.environ.get("SIGNING_KEY_PASSWORD", "")
+              if explicit:
+                  return [explicit]
+              pem = p8_pem()
+              raw = p8_raw()
+              crlf = pem.replace("\n", "\r\n")
+              forms = [pem, pem.rstrip("\n"), raw, raw.strip(), raw.strip() + "\n",
+                       crlf, crlf.rstrip("\n"), crlf.rstrip("\r\n")]
+              out = []
+              for s in forms:
+                  h = hashlib.sha256(s.encode()).hexdigest()
+                  if h not in out:
+                      out.append(h)
+              return out
+
+
+          def openssl(args, password):
+              return subprocess.run(["openssl", *args, "-pass", "env:RW_PASS"],
+                                    env=dict(os.environ, RW_PASS=password), capture_output=True)
+
+
+          def cmd_decrypt_key(src, dst):
+              for i, pw in enumerate(password_candidates()):
+                  r = openssl(["enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "200000", "-in", src, "-out", dst], pw)
+                  if r.returncode == 0:
+                      check = subprocess.run(["openssl", "pkey", "-in", dst, "-noout"], capture_output=True)
+                      if check.returncode == 0:
+                          print(f"署名用秘密鍵を復号した（候補 {i + 1}）")
+                          return
+                  if os.path.exists(dst):
+                      os.remove(dst)
+              die("署名用秘密鍵を復号できない。.p8 が変わった可能性。runway の apple-signing を action=create で実行し直す")
+
+
+          def cmd_encrypt_key(src, dst):
+              pw = password_candidates()[0]
+              r = openssl(["enc", "-aes-256-cbc", "-pbkdf2", "-iter", "200000", "-salt", "-in", src, "-out", dst], pw)
+              if r.returncode != 0:
+                  print(r.stderr.decode(errors="replace"))
+                  die("暗号化に失敗")
+              print(f"暗号化した: {dst}")
+
+
+          def cmd_upload(ipa, bundle_id, version, build, platform):
+              size = os.path.getsize(ipa)
+              print(f"{os.path.basename(ipa)}: {size} bytes, version {version} ({build}), platform {platform}")
+              aid, _ = app_id(bundle_id)
+
+              _, res = api("POST", "/v1/buildUploads", {"data": {
+                  "type": "buildUploads",
+                  "attributes": {"cfBundleShortVersionString": version, "cfBundleVersion": build,
+                                 "platform": PLATFORMS.get(platform, "IOS")},
+                  "relationships": {"app": {"data": {"type": "apps", "id": aid}}},
+              }})
+              upload = res["data"]
+              print("build upload:", upload["id"])
+
+              _, res = api("POST", "/v1/buildUploadFiles", {"data": {
+                  "type": "buildUploadFiles",
+                  "attributes": {"fileName": os.path.basename(ipa), "fileSize": size, "uti": "com.apple.ipa",
+                                 "assetType": "ASSET"},
+                  "relationships": {"buildUpload": {"data": {"type": "buildUploads", "id": upload["id"]}}},
+              }})
+              file = res["data"]
+              operations = file["attributes"].get("uploadOperations") or []
+              print(f"build upload file: {file['id']}, {len(operations)} part(s)")
+
+              md5 = hashlib.md5()
+              with open(ipa, "rb") as f:
+                  for chunk in iter(lambda: f.read(1 << 20), b""):
+                      md5.update(chunk)
+                  for n, op in enumerate(operations, 1):
+                      f.seek(op["offset"])
+                      part = f.read(op["length"])
+                      headers = {h["name"]: h["value"] for h in op.get("requestHeaders") or []}
+                      req = urllib.request.Request(op["url"], data=part, method=op["method"], headers=headers)
+                      try:
+                          with urllib.request.urlopen(req, timeout=300) as r:
+                              print(f"part {n}/{len(operations)}: HTTP {r.status}")
+                      except urllib.error.HTTPError as e:
+                          print(f"part {n}/{len(operations)}: HTTP {e.code}")
+                          print(e.read().decode(errors="replace")[:2000])
+                          sys.exit(1)
+
+              api("PATCH", f"/v1/buildUploadFiles/{file['id']}", {"data": {
+                  "type": "buildUploadFiles", "id": file["id"],
+                  "attributes": {"uploaded": True,
+                                 "sourceFileChecksums": {"file": {"hash": md5.hexdigest(), "algorithm": "MD5"}}},
+              }})
+              print("アップロード完了。App Store Connect の処理を待つ")
+
+              deadline = time.time() + 30 * 60
+              last = None
+              while time.time() < deadline:
+                  _, res = api("GET", f"/v1/buildUploads/{upload['id']}")
+                  state = res["data"]["attributes"].get("state") or {}
+                  if state.get("state") != last:
+                      last = state.get("state")
+                      print("state:", last)
+                  for kind in ("errors", "warnings", "infos"):
+                      for d in state.get(kind) or []:
+                          print(f"  {kind[:-1]}: {d.get('code')}: {d.get('description')}")
+                  if last == "COMPLETE":
+                      print("TestFlight に届いた（App Store Connect の TestFlight タブに数分で出る）")
+                      return
+                  if last == "FAILED":
+                      die("App Store Connect がビルドを拒否した（上のエラー参照）")
+                  time.sleep(20)
+              print("::warning::30 分たっても処理中。App Store Connect の TestFlight タブを確認")
+
+
+          def main():
+              if len(sys.argv) < 2:
+                  print(__doc__)
+                  sys.exit(2)
+              cmd, args = sys.argv[1], sys.argv[2:]
+              table = {
+                  "write-key": (cmd_write_key, 0), "check": (cmd_check, 1), "next-build": (cmd_next_build, 2),
+                  "certs-list": (cmd_certs_list, 0), "cert-create": (cmd_cert_create, 3), "revoke-all": (cmd_revoke_all, 0),
+                  "decrypt-key": (cmd_decrypt_key, 2), "encrypt-key": (cmd_encrypt_key, 2), "upload": (cmd_upload, 5),
+              }
+              if cmd not in table or len(args) != table[cmd][1]:
+                  print(__doc__)
+                  sys.exit(2)
+              table[cmd][0](*args)
+
+
+          if __name__ == "__main__":
+              main()
+          # <<< asc.py
+          PY
+          printf '#!/bin/sh\nexec "%s" "%s" "$@"\n' "$RUNNER_TEMP/runway/venv/bin/python" "$RUNNER_TEMP/runway/asc.py" > "$RUNNER_TEMP/runway/asc"
+          chmod +x "$RUNNER_TEMP/runway/asc"
+          echo "$RUNNER_TEMP/runway" >> "$GITHUB_PATH"
+
+      - name: Select Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidates=()
+          for x in /Applications/Xcode_"$RW_XCODE"*.app; do
+            [ -d "$x" ] || continue
+            case "$x" in *[Bb]eta*) continue ;; esac
+            candidates+=("$x")
+          done
+          if [ "${#candidates[@]}" -eq 0 ]; then
+            echo "::error::このランナーに Xcode $RW_XCODE が無い。入っている Xcode:"; ls -d /Applications/Xcode*.app; exit 1
+          fi
+          xcode=$(printf '%s\n' "${candidates[@]}" | sort -V | tail -n 1)
+          sudo xcode-select -s "$xcode/Contents/Developer"
+          xcodebuild -version
+
+      - name: Import Developer ID certificate
+        shell: bash
+        env:
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          HANGER_TOKEN: ${{ secrets.MATCH_GIT_TOKEN }}
+        run: |
+          set -euo pipefail
+          asc write-key > /dev/null
+          dir="$RUNNER_TEMP/sign"; mkdir -p "$dir"
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HANGER_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth"
+          git -c http.extraheader="$auth" clone --quiet --depth 1 "https://github.com/$RW_HANGER_REPO.git" "$dir/hanger" \
+            || { echo "::error::$RW_HANGER_REPO を読めない（MATCH_GIT_TOKEN を確認）"; exit 1; }
+          src="$dir/hanger/signing"
+          if [ ! -f "$src/developer_id_application.cer" ] || [ ! -f "$src/devid.key.enc" ]; then
+            echo "::error::Developer ID 証明書が hanger に無い。runway の Actions → apple-signing を create-developer-id で実行する"; exit 1
+          fi
+          asc decrypt-key "$src/devid.key.enc" "$dir/devid.key"
+          kc="$RUNNER_TEMP/build.keychain-db"; kcpass="$(uuidgen)"
+          security create-keychain -p "$kcpass" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kcpass" "$kc"
+          openssl x509 -inform DER -in "$src/developer_id_application.cer" -out "$dir/devid.pem"
+          openssl pkcs12 -export -inkey "$dir/devid.key" -in "$dir/devid.pem" -name devid -out "$dir/devid.p12" -passout "pass:$kcpass"
+          security import "$dir/devid.p12" -k "$kc" -P "$kcpass" -T /usr/bin/codesign -T /usr/bin/security
+          for ca in DeveloperIDG2CA.cer AppleWWDRCAG3.cer; do
+            curl -fsSL -o "$dir/$ca" "https://www.apple.com/certificateauthority/$ca" && security import "$dir/$ca" -k "$kc" -T /usr/bin/codesign || true
+          done
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpass" "$kc" > /dev/null
+          # shellcheck disable=SC2046  # 既存キーチェーンの一覧を語分割して渡す
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          rm -rf "$dir/devid.key" "$dir/devid.p12" "$dir/hanger"
+          identity=$(security find-identity -v -p codesigning "$kc" | awk '/Developer ID Application/ {print $2; exit}')
+          [ -n "$identity" ] || { echo "::error::Developer ID Application の署名 ID がキーチェーンに無い"; security find-identity -v -p codesigning "$kc"; exit 1; }
+          echo "RW_IDENTITY=$identity" >> "$GITHUB_ENV"
+          security find-identity -v -p codesigning "$kc" | sed 's/[0-9A-F]\{40\}/<sha1>/'
+
+      - name: Build
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+        run: eval "$RW_BUILD"
+
+      - name: Sign
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          set -euo pipefail
+          # macOS 標準の bash 3.2 でも動くように書く（globstar・空配列展開を使わない）
+          sign() {
+            if [ -n "$RW_ENTITLEMENTS" ]; then
+              codesign --force --timestamp --options runtime --entitlements "$GITHUB_WORKSPACE/$RW_ENTITLEMENTS" --sign "$RW_IDENTITY" "$1"
+            else
+              codesign --force --timestamp --options runtime --sign "$RW_IDENTITY" "$1"
+            fi
+          }
+          stage="$RUNNER_TEMP/stage/$RW_NAME"; mkdir -p "$stage"
+          # products の各行を glob 展開（** 対応）。見つからない行があればエラー
+          python3 - "$RUNNER_TEMP/products.txt" <<'PY'
+          import glob, os, sys
+          out, missing = [], []
+          for line in os.environ["RW_PRODUCTS"].splitlines():
+              pat = line.strip()
+              if not pat:
+                  continue
+              hits = sorted(glob.glob(pat, recursive=True))
+              if not hits:
+                  missing.append(pat)
+              out.extend(h for h in hits if h not in out)
+          for m in missing:
+              print(f"::error::成果物が見つからない: {m}")
+          if missing or not out:
+              sys.exit(1)
+          open(sys.argv[1], "w").write("\n".join(out) + "\n")
+          PY
+          count=0
+          while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            echo "== $p"
+            # 内側（同梱のフレームワーク・dylib・ヘルパー）から先に署名する
+            if [ -d "$p/Contents" ]; then
+              while IFS= read -r -d '' inner; do sign "$inner"; done < <(
+                find "$p/Contents" -depth \( -name '*.framework' -o -name '*.dylib' -o -name '*.bundle' -o -name '*.app' -o -name '*.xpc' \) -print0)
+            fi
+            sign "$p"
+            codesign --verify --strict --deep --verbose=2 "$p"
+            cp -R "$p" "$stage/"
+            count=$((count + 1))
+          done < "$RUNNER_TEMP/products.txt"
+          [ "$count" -gt 0 ] || { echo "::error::署名対象が 0 件"; exit 1; }
+          if [ -n "$RW_README" ]; then cp "$GITHUB_WORKSPACE/$RW_README" "$stage/"; fi
+          echo "署名した成果物: $count 件"
+
+      - name: Package and notarize
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
+          out="$RUNNER_TEMP/out"; mkdir -p "$out"
+          file="$out/${RW_NAME}-${RW_VER}.${RW_PACKAGE}"
+          if [ "$RW_PACKAGE" = "dmg" ]; then
+            hdiutil create -volname "$RW_NAME" -srcfolder "$RUNNER_TEMP/stage/$RW_NAME" -fs HFS+ -format UDZO -ov "$file"
+            codesign --force --timestamp --sign "$RW_IDENTITY" "$file"
+          else
+            (cd "$RUNNER_TEMP/stage" && ditto -c -k --sequesterRsrc --keepParent "$RW_NAME" "$file")
+          fi
+          xcrun notarytool submit "$file" --key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" \
+            --wait --timeout 60m --output-format json | tee "$RUNNER_TEMP/notary.json"
+          status=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("status",""))' "$RUNNER_TEMP/notary.json")
+          sid=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("id",""))' "$RUNNER_TEMP/notary.json")
+          if [ -n "$sid" ]; then
+            xcrun notarytool log "$sid" --key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" "$RUNNER_TEMP/notary-log.json" || true
+            cat "$RUNNER_TEMP/notary-log.json" 2>/dev/null || true
+          fi
+          [ "$status" = "Accepted" ] || { echo "::error::公証が通らなかった（status: $status）。上の notary log を参照"; exit 1; }
+          if [ "$RW_PACKAGE" = "dmg" ]; then
+            xcrun stapler staple "$file"
+            xcrun stapler validate "$file"
+            spctl -a -t open --context context:primary-signature -vv "$file" || true
+          fi
+          echo "RW_FILE=$file" >> "$GITHUB_ENV"
+          {
+            echo "### 署名・公証完了"
+            echo ""
+            echo "- 配布物: \`$(basename "$file")\`（Artifacts からダウンロード）"
+            echo "- 公証: Accepted"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.name }}-notarized
+          path: ${{ env.RW_FILE }}
+          retention-days: 30
+
+      - name: Clean up
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/keys" "$RUNNER_TEMP/sign"
+          security delete-keychain "$RUNNER_TEMP/build.keychain-db" 2>/dev/null || true

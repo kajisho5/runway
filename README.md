@@ -19,13 +19,15 @@
 ```
 .github/workflows/apple-testflight.yml  アプリ側から呼ぶ共通ワークフロー（ビルド → 署名 → TestFlight）
 .github/workflows/apple-signing.yml     共有証明書の用意・確認（runway の Actions から手動実行）
+.github/workflows/mac-notarize.yml      Mac 向けプラグイン/アプリのビルド → Developer ID 署名 → 公証 → dmg/zip
 .github/workflows/sync-secrets.yml      runway の Secrets を repos.txt の全リポへコピー
 .github/workflows/selfcheck.yml         runway 自身の整合性チェック
-scripts/asc.py                          App Store Connect API ツール（apple-testflight.yml に埋め込み済み）
+scripts/asc.py                          App Store Connect API ツール（apple-testflight.yml / mac-notarize.yml に埋め込み済み）
 scripts/embed.py                        asc.py を編集したら実行して埋め込みを更新する
 scripts/sync-secrets.sh / .ps1          sync-secrets を PC から行う場合（gh CLI が必要）
 repos.txt                               Secrets の配布先
-templates/testflight.yml                アプリ側に置くワークフローの雛形
+templates/testflight.yml                iPhone 等のアプリ側に置くワークフローの雛形
+templates/mac-plugin.yml                Mac 向けプラグイン（VST3 / AU）側に置くワークフローの雛形
 ```
 
 ## Secrets
@@ -69,6 +71,19 @@ https://github.com/settings/personal-access-tokens/new?name=runway-sync-secrets&
 - `ITSAppUsesNonExemptEncryption = NO` を Info.plist に入れておくと、TestFlight で輸出コンプライアンスの質問が出ない
 - 対応プラットフォームは `ios` / `tvos` / `visionos`。macOS は未対応
 
+
+## Mac 向けプラグイン・アプリ（Developer ID 署名 + 公証）
+
+TestFlight ではなく、Apple の公証（notarization）を通した `.dmg` / `.zip` を作る。DAW 用の VST3 / AU プラグインや、App Store 外で配る Mac アプリ向け。
+
+1. **初回だけ**：runway の Actions → **apple-signing** を `create-developer-id` で実行する。API で Developer ID 証明書を作れなかった場合は、実行結果の Summary に手動発行の手順が出る（hanger の CSR を developer.apple.com に上げて、できた .cer を hanger に置く）
+2. **リポに置く**：プラグインのリポに `templates/mac-plugin.yml` を `.github/workflows/release-mac.yml` としてコピーし、`build`（ビルドコマンド）と `products`（できたバンドルのパス）を合わせる
+3. **実行する**：Actions → release-mac → Run workflow、または `v1.0.0` のようなタグを push。公証済みの `.dmg` が Artifacts に出る
+
+- 公証は App Store Connect API のチームキーで行う（`notarytool --key`）。今の API キーをそのまま使う
+- AAX（Pro Tools）は PACE の署名が別途必要なので対象外
+- Windows 版（VST3）の署名は別の仕組みが必要（未対応）
+
 ## うまくいかないとき
 
 | 症状 | 原因と対処 |
@@ -95,8 +110,7 @@ https://github.com/settings/personal-access-tokens/new?name=runway-sync-secrets&
 
 ## 更新ルール
 
-各アプリは `@v1` で呼ぶ。runway を直したら次のどちらかにする。
-- 互換性のある修正：Releases で `v1` を作り直す
-- 互換性が壊れる修正：`v2` を切る
+各アプリは `@main` で呼ぶ（1 人開発なのでタグ管理を省く）。runway の main を直せば全アプリに即反映される。push 時に selfcheck が走る。
+互換性が壊れる変更をするときだけ、事前にタグ（例: `v2`）を切って各アプリをそのタグに固定する。古い `v1` タグは旧方式（fastlane match）時代のもので、使っていない。
 
 `scripts/asc.py` を編集したら `python3 scripts/embed.py` を実行してからコミットする。忘れると selfcheck が落ちる。

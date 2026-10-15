@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scripts/asc.py を apple-testflight.yml のヒアドキュメントに埋め込む。
+"""scripts/asc.py を apple-testflight.yml / mac-notarize.yml のヒアドキュメントに埋め込む。
 
 呼び出し側リポから private な runway のファイルは読めないため、共通ワークフローには asc.py を丸ごと埋め込んでいる。
   python3 scripts/embed.py          埋め込みを更新
@@ -12,7 +12,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "scripts" / "asc.py"
-WF = ROOT / ".github" / "workflows" / "apple-testflight.yml"
+WFS = [ROOT / ".github" / "workflows" / n for n in ("apple-testflight.yml", "mac-notarize.yml")]
 PATTERN = re.compile(r"(?P<indent>[ ]*)# >>> asc\.py[^\n]*\n.*?(?P=indent)# <<< asc\.py\n", re.S)
 
 
@@ -28,18 +28,23 @@ def render(indent):
 
 
 def main():
-    text = WF.read_text(encoding="utf-8")
-    m = PATTERN.search(text)
-    if not m:
-        sys.exit("apple-testflight.yml に埋め込みマーカーが無い")
-    new = text[:m.start()] + render(m.group("indent")) + text[m.end():]
-    if "--check" in sys.argv:
-        if new != text:
-            sys.exit("apple-testflight.yml の asc.py が古い。python3 scripts/embed.py を実行してコミットする")
-        print("埋め込みは最新")
-        return
-    WF.write_text(new, encoding="utf-8")
-    print("埋め込みを更新した")
+    stale = []
+    for wf in WFS:
+        text = wf.read_text(encoding="utf-8")
+        m = PATTERN.search(text)
+        if not m:
+            sys.exit(f"{wf.name} に埋め込みマーカーが無い")
+        new = text[:m.start()] + render(m.group("indent")) + text[m.end():]
+        if new == text:
+            continue
+        if "--check" in sys.argv:
+            stale.append(wf.name)
+        else:
+            wf.write_text(new, encoding="utf-8")
+            print(f"{wf.name}: 埋め込みを更新した")
+    if stale:
+        sys.exit(f"{', '.join(stale)} の asc.py が古い。python3 scripts/embed.py を実行してコミットする")
+    print("埋め込みは最新")
 
 
 if __name__ == "__main__":

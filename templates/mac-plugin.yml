@@ -1,0 +1,28 @@
+# Mac 向けプラグイン（VST3 / AU）のリポに .github/workflows/release-mac.yml として置く雛形。
+# ビルド → Developer ID 署名 → Apple の公証 → .dmg までを runway が行う。build と products をプロジェクトに合わせる。
+name: release-mac
+
+on:
+  workflow_dispatch:      # Actions タブ／iPhone の GitHub アプリから手動実行
+  push:
+    tags: ["v*"]          # v1.0.0 などのタグでも実行（dmg 名のバージョンになる）
+
+permissions:
+  contents: read
+
+jobs:
+  mac:
+    uses: kajisho5/runway/.github/workflows/mac-notarize.yml@main
+    with:
+      name: MyPlugin
+      # JUCE + CMake の例（Universal = Apple Silicon + Intel）
+      build: >-
+        cmake -B build -G Xcode
+        -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+        -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+        && cmake --build build --config Release --parallel
+      products: |
+        build/**/Release/VST3/*.vst3
+        build/**/Release/AU/*.component
+      # readme: dist/INSTALL.txt      # dmg に同梱するインストール説明（任意）
+    secrets: inherit
