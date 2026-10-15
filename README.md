@@ -80,7 +80,9 @@ TestFlight ではなく、Apple の公証（notarization）を通した `.dmg` /
 2. **リポに置く**：プラグインのリポに `templates/mac-plugin.yml` を `.github/workflows/release-mac.yml` としてコピーし、`build`（ビルドコマンド）と `products`（できたバンドルのパス）を合わせる
 3. **実行する**：Actions → release-mac → Run workflow、または `v1.0.0` のようなタグを push。公証済みの `.dmg` が Artifacts に出る
 
+- **対象リポに Secrets が無くても**、runway の Actions → **mac-release** に対象リポ（public）を入れて実行すれば同じ署名・公証ができる。ただし runway は private なので macOS の無料枠を使う
 - 公証は App Store Connect API のチームキーで行う（`notarytool --key`）。今の API キーをそのまま使う
+- 2026/10/16 に実機ランナーで通し確認済み（ダミーの VST3 を署名 → 公証 Accepted → ステープル）
 - AAX（Pro Tools）は PACE の署名が別途必要なので対象外
 - Windows 版（VST3）の署名は別の仕組みが必要（未対応）
 
