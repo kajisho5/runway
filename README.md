@@ -13,7 +13,8 @@ Apple 全プラットフォーム（iPhone / iPad / Apple Watch / Mac / Apple TV
 ```
 .github/workflows/apple-testflight.yml  各アプリから呼ぶ共通ワークフロー（ビルド→署名→TestFlight）
 .github/workflows/apple-certs.yml       証明書・プロファイルの作成/更新（runway の Actions タブから手動実行）
-scripts/sync-secrets.sh / .ps1          repos.txt の全リポへ Secrets を一括投入
+.github/workflows/sync-secrets.yml     runway の Secrets を repos.txt の全リポへコピー（ブラウザから実行）
+scripts/sync-secrets.sh / .ps1          同じことを PC から行う場合のスクリプト
 repos.txt                               Secrets の配布先リスト
 secrets.env.example                     Secrets の雛形（secrets.env にコピーして使う）
 templates/testflight.yml                アプリ側に置く呼び出しワークフローの雛形
@@ -42,13 +43,25 @@ templates/testflight.yml                アプリ側に置く呼び出しワー�
 5. **Team ID を控える**
    developer.apple.com → Membership details に載っている。
 
-6. **Secrets を配る**
-   ```bash
-   cp secrets.env.example secrets.env   # 値を入れる。.p8 は runway 直下に置いてパスを書く
-   bash scripts/sync-secrets.sh          # Windows の PowerShell なら: pwsh -File scripts/sync-secrets.ps1
-   ```
-   投入されるのは `ASC_KEY_ID` / `ASC_ISSUER_ID` / `ASC_KEY_P8_BASE64` / `APPLE_TEAM_ID` / `MATCH_PASSWORD` / `MATCH_GIT_TOKEN` の6件。
-   `secrets.env` と `.p8` は `.gitignore` 済みなので、コミットされない。
+6. **Secrets を配る（ブラウザだけで完結）**
+   1. runway の Settings → Secrets and variables → Actions に次の7件を登録する。
+
+      | 名前 | 値 |
+      |---|---|
+      | `ASC_KEY_ID` | API キーの Key ID |
+      | `ASC_ISSUER_ID` | Issuer ID |
+      | `ASC_KEY_P8_BASE64` | `.p8` を base64 化した文字列（PowerShell: `[Convert]::ToBase64String([IO.File]::ReadAllBytes("AuthKey_XXXX.p8"))`） |
+      | `APPLE_TEAM_ID` | Team ID |
+      | `MATCH_PASSWORD` | hangar 暗号化用のパスフレーズ（新しく決める。無くすと復号できない） |
+      | `MATCH_GIT_TOKEN` | 手順 4 の PAT |
+      | `SYNC_TOKEN` | 配布用の Fine-grained PAT（下記）。runway にだけ置き、配布はしない |
+
+   2. `SYNC_TOKEN` を作る。GitHub → Settings → Developer settings → Fine-grained tokens で作成する。
+      - Repository access：All repositories（新しいアプリリポにもそのまま配れる）
+      - Permissions：Secrets を Read and write
+   3. runway の Actions → **sync-secrets** → Run workflow で、`repos.txt` の全リポへ6件がコピーされる。`repos.txt` を編集して push したときも自動で実行される。
+
+   PC から配りたい場合は、`scripts/sync-secrets.sh` / `.ps1` と `secrets.env.example` も使える（gh CLI が必要）。
 
 ## アプリを追加する手順
 
@@ -65,7 +78,7 @@ templates/testflight.yml                アプリ側に置く呼び出しワー�
    - type：`appstore`
 
 4. **Secrets の配布先に追加する**
-   `repos.txt` にアプリのリポを足して、`sync-secrets` を再実行する。
+   `repos.txt` にアプリのリポを足して push する（GitHub の画面で編集してもよい）。sync-secrets が自動で走り、Secrets が配られる。
 
 5. **呼び出しワークフローを置く**
    アプリのリポに `templates/testflight.yml` を `.github/workflows/testflight.yml` としてコピーし、`project` / `scheme` / `signing_targets` を書き換える。
