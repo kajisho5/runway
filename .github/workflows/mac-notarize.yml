@@ -660,8 +660,10 @@ jobs:
           fi
           [ "$status" = "Accepted" ] || { echo "::error::公証が通らなかった（status: $status）。上の notary log を参照"; exit 1; }
           if [ "$RW_PACKAGE" = "dmg" ]; then
-            xcrun stapler staple "$file"
-            xcrun stapler validate "$file"
+            # staple / validate は Apple のチケットサーバーと通信する。回線の一時的な切断で落ちるので再試行する
+            retry() { local n; for n in 1 2 3 4 5; do "$@" && return 0; echo "再試行 $n/5: $*"; sleep $((n * 10)); done; return 1; }
+            retry xcrun stapler staple "$file" || { echo "::error::ステープルに失敗（公証自体は Accepted）"; exit 1; }
+            retry xcrun stapler validate "$file" || echo "::warning::stapler validate を確認できなかった（ステープルは成功済み。回線の問題の可能性）"
             spctl -a -t open --context context:primary-signature -vv "$file" || true
           fi
           echo "RW_FILE=$file" >> "$GITHUB_ENV"
