@@ -1,0 +1,39 @@
+# アプリ側リポに .github/workflows/testflight.yml として置く雛形。
+# MyApp / com.example.* は仮の値なので自分のアプリに置き換える。
+name: testflight
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  # iPhone / iPad（Apple Watch アプリを同梱する場合もこのジョブ1本）
+  ios:
+    uses: kajisho5/runway/.github/workflows/apple-testflight.yml@v1
+    with:
+      platform: ios
+      project: MyApp.xcodeproj
+      scheme: MyApp
+      # 1行目はメインアプリ。同梱ターゲット（Watch・Widget・Extension）も全部書く
+      signing_targets: |
+        MyApp=com.example.myapp
+        MyAppWatch=com.example.myapp.watchkitapp
+      extra_sdks: watchOS
+      # XcodeGen 等でプロジェクトを生成する場合:
+      # pre_build: brew install xcodegen && xcodegen generate
+    secrets: inherit
+
+  # 他の OS も出すならジョブを足す（例: Mac）
+  # macos:
+  #   uses: kajisho5/runway/.github/workflows/apple-testflight.yml@v1
+  #   with:
+  #     platform: macos
+  #     project: MyApp.xcodeproj
+  #     scheme: MyAppMac
+  #     signing_targets: |
+  #       MyAppMac=com.example.myapp
+  #   secrets: inherit

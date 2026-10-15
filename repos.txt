@@ -1,0 +1,5 @@
+# Secrets を配る先（owner/repo を1行ずつ）。# 以降はコメント
+# runway 自身は apple-certs 実行に必要なので消さない
+kajisho5/runway
+kajisho5/crosspoint
+# kajisho5/OSEE_Control_Software

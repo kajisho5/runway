@@ -1,0 +1,357 @@
+# Apple 全プラットフォーム共通：ビルド → 署名 → TestFlight アップロード
+# 各アプリのリポから `uses: kajisho5/runway/.github/workflows/apple-testflight.yml@v1` で呼ぶ。
+# 呼び出し例は templates/testflight.yml、前提条件は README.md を参照。
+name: apple-testflight
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: "ios | tvos | visionos | macos（Apple Watch は ios に同梱して出す）"
+        type: string
+        required: true
+      scheme:
+        description: "ビルドする Xcode スキーム"
+        type: string
+        required: true
+      project:
+        description: ".xcodeproj のパス（working_directory からの相対）。署名設定の書き換えに使うので workspace 利用時も必須"
+        type: string
+        required: true
+      workspace:
+        description: ".xcworkspace のパス（使う場合のみ）"
+        type: string
+        default: ""
+      signing_targets:
+        description: "Target=bundle.id を改行かカンマ区切りで。1行目はメインアプリ。Watch・Widget 等の同梱ターゲットも全部書く"
+        type: string
+        required: true
+      extra_sdks:
+        description: "同梱ターゲット用に追加で必要な SDK（例: watchOS）。カンマ/空白区切り"
+        type: string
+        default: ""
+      configuration:
+        description: "ビルド構成"
+        type: string
+        default: Release
+      code_sign_identity:
+        description: "署名 ID。match は Apple Distribution 証明書を作るので通常は変更不要"
+        type: string
+        default: Apple Distribution
+      build_number:
+        description: "ビルド番号を固定したい場合のみ指定。空なら TestFlight 上の最新 +1"
+        type: string
+        default: ""
+      xcode_version:
+        description: "maxim-lobanov/setup-xcode に渡す値"
+        type: string
+        default: latest-stable
+      runner:
+        description: "GitHub ホステッドランナーのラベル"
+        type: string
+        default: macos-latest
+      working_directory:
+        description: "Xcode プロジェクトがあるディレクトリ（リポ直下なら .）"
+        type: string
+        default: .
+      pre_build:
+        description: "ビルド前に実行するシェル（例: xcodegen generate）"
+        type: string
+        default: ""
+      match_git_url:
+        description: "証明書リポの URL。空なら https://github.com/<owner>/hangar.git"
+        type: string
+        default: ""
+      match_git_branch:
+        description: "証明書リポのブランチ"
+        type: string
+        default: main
+    secrets:
+      ASC_KEY_ID:
+        required: true
+      ASC_ISSUER_ID:
+        required: true
+      ASC_KEY_P8_BASE64:
+        required: true
+      APPLE_TEAM_ID:
+        required: true
+      MATCH_PASSWORD:
+        required: true
+      MATCH_GIT_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  testflight:
+    name: ${{ inputs.platform }} → TestFlight
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 60
+    concurrency:
+      group: testflight-${{ github.repository }}-${{ inputs.platform }}
+      cancel-in-progress: false
+    env:
+      RW_PLATFORM: ${{ inputs.platform }}
+      RW_SCHEME: ${{ inputs.scheme }}
+      RW_PROJECT: ${{ inputs.project }}
+      RW_WORKSPACE: ${{ inputs.workspace }}
+      RW_SIGNING_TARGETS: ${{ inputs.signing_targets }}
+      RW_EXTRA_SDKS: ${{ inputs.extra_sdks }}
+      RW_CONFIGURATION: ${{ inputs.configuration }}
+      RW_CODE_SIGN_IDENTITY: ${{ inputs.code_sign_identity }}
+      RW_BUILD_NUMBER: ${{ inputs.build_number }}
+      RW_PRE_BUILD: ${{ inputs.pre_build }}
+      RW_MATCH_GIT_URL: ${{ inputs.match_git_url || format('https://github.com/{0}/hangar.git', github.repository_owner) }}
+      RW_MATCH_GIT_BRANCH: ${{ inputs.match_git_branch }}
+      RW_SRC_DIR: ${{ github.workspace }}/${{ inputs.working_directory }}
+      FASTLANE_SKIP_UPDATE_CHECK: "1"
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      FASTLANE_HIDE_CHANGELOG: "1"
+      FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: "120"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate inputs
+        shell: bash
+        run: |
+          case "$RW_PLATFORM" in
+            ios|tvos|visionos|macos) ;;
+            *) echo "::error::platform は ios / tvos / visionos / macos のいずれか（指定値: $RW_PLATFORM）"; exit 1 ;;
+          esac
+          if [ ! -d "$RW_SRC_DIR/$RW_PROJECT" ]; then
+            echo "::error::project が見つからない: $RW_SRC_DIR/$RW_PROJECT"
+            exit 1
+          fi
+          if [ -n "$RW_WORKSPACE" ] && [ ! -d "$RW_SRC_DIR/$RW_WORKSPACE" ]; then
+            echo "::error::workspace が見つからない: $RW_SRC_DIR/$RW_WORKSPACE"
+            exit 1
+          fi
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ inputs.xcode_version }}
+
+      - name: Ensure platform SDKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKS="$(xcodebuild -showsdks)"
+          ensure() {
+            local name="$1" sdk
+            case "$name" in
+              iOS) sdk=iphoneos ;;
+              watchOS) sdk=watchos ;;
+              tvOS) sdk=appletvos ;;
+              visionOS) sdk=xros ;;
+              macOS) return 0 ;;
+              *) echo "::error::未知の SDK 名: $name（iOS / watchOS / tvOS / visionOS）"; exit 1 ;;
+            esac
+            if grep -q -- "-sdk ${sdk}[0-9]" <<<"$SDKS"; then
+              echo "$name SDK: インストール済み"
+            else
+              echo "$name SDK が無いのでダウンロードする"
+              xcodebuild -downloadPlatform "$name"
+            fi
+          }
+          case "$RW_PLATFORM" in
+            ios) ensure iOS ;;
+            tvos) ensure tvOS ;;
+            visionos) ensure visionOS ;;
+            macos) ;;
+          esac
+          for p in ${RW_EXTRA_SDKS//,/ }; do ensure "$p"; done
+
+      - name: Install fastlane
+        shell: bash
+        run: |
+          if command -v fastlane >/dev/null 2>&1; then
+            echo "fastlane: プリインストール版を使用"
+          else
+            brew install fastlane
+          fi
+          fastlane --version | tail -1
+
+      - name: Pre-build
+        if: inputs.pre_build != ''
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+        run: eval "$RW_PRE_BUILD"
+
+      - name: Write Fastfile
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/runway/fastlane"
+          cat > "$RUNNER_TEMP/runway/fastlane/Fastfile" <<'RUBY'
+          opt_out_usage
+          require "uri"
+          require "tmpdir"
+
+          default_platform(:ios)
+
+          PLATFORMS = {
+            "ios"      => { match: "ios",   pilot: "ios",       destination: "generic/platform=iOS" },
+            "visionos" => { match: "ios",   pilot: "xros",      destination: "generic/platform=visionOS" },
+            "tvos"     => { match: "tvos",  pilot: "appletvos", destination: "generic/platform=tvOS" },
+            "macos"    => { match: "macos", pilot: "osx",       destination: "generic/platform=macOS" },
+          }.freeze
+
+          def need(key)
+            value = ENV[key].to_s.strip
+            UI.user_error!("#{key} が空") if value.empty?
+            value
+          end
+
+          def match_git_auth(url, token)
+            owner = URI(url).path.split("/").reject(&:empty?).first
+            UI.user_error!("match_git_url から owner を読めない: #{url}") if owner.to_s.empty?
+            ["#{owner}:#{token}"].pack("m0")
+          end
+
+          def parse_targets(raw)
+            raw.split(/[\n,]/).map(&:strip).reject(&:empty?).map do |entry|
+              name, bundle_id = entry.split("=", 2).map { |s| s.to_s.strip }
+              UI.user_error!("signing_targets は Target=bundle.id の形式: #{entry}") if name.empty? || bundle_id.empty?
+              [name, bundle_id]
+            end
+          end
+
+          lane :testflight_upload do
+            key = need("RW_PLATFORM").downcase
+            conf = PLATFORMS[key] || UI.user_error!("未対応の platform: #{key}")
+
+            src = need("RW_SRC_DIR")
+            project = File.expand_path(need("RW_PROJECT"), src)
+            workspace_rel = ENV["RW_WORKSPACE"].to_s.strip
+            workspace = workspace_rel.empty? ? nil : File.expand_path(workspace_rel, src)
+
+            targets = parse_targets(need("RW_SIGNING_TARGETS"))
+            bundle_ids = targets.map(&:last).uniq
+            team_id = need("APPLE_TEAM_ID")
+            configuration = need("RW_CONFIGURATION")
+            scheme = need("RW_SCHEME")
+            git_url = need("RW_MATCH_GIT_URL")
+
+            setup_ci
+
+            api_key = app_store_connect_api_key(
+              key_id: need("ASC_KEY_ID"),
+              issuer_id: need("ASC_ISSUER_ID"),
+              key_content: need("ASC_KEY_P8_BASE64"),
+              is_key_content_base64: true,
+              in_house: false
+            )
+
+            match_opts = {
+              type: "appstore",
+              readonly: true,
+              platform: conf[:match],
+              app_identifier: bundle_ids,
+              team_id: team_id,
+              api_key: api_key,
+              generate_apple_certs: true,
+              git_url: git_url,
+              git_branch: need("RW_MATCH_GIT_BRANCH"),
+              git_basic_authorization: match_git_auth(git_url, need("MATCH_GIT_TOKEN"))
+            }
+            match_opts[:additional_cert_types] = ["mac_installer_distribution"] if key == "macos"
+            match(match_opts)
+
+            mapping = lane_context[SharedValues::MATCH_PROVISIONING_PROFILE_MAPPING] || {}
+            targets.each do |name, bundle_id|
+              profile = mapping[bundle_id].to_s
+              UI.user_error!("#{bundle_id} のプロファイルが hangar に無い。runway の apple-certs を先に実行する") if profile.empty?
+              update_code_signing_settings(
+                path: project,
+                use_automatic_signing: false,
+                targets: [name],
+                build_configurations: [configuration],
+                team_id: team_id,
+                code_sign_identity: need("RW_CODE_SIGN_IDENTITY"),
+                profile_name: profile
+              )
+            end
+
+            build_number = ENV["RW_BUILD_NUMBER"].to_s.strip
+            if build_number.empty?
+              latest = latest_testflight_build_number(
+                api_key: api_key,
+                app_identifier: bundle_ids.first,
+                platform: conf[:pilot],
+                initial_build_number: 0
+              )
+              build_number = (latest.to_s.split(".").first.to_i + 1).to_s
+            end
+            UI.important("Build number: #{build_number}")
+
+            out_dir = File.join(ENV["RUNNER_TEMP"] || Dir.tmpdir, "runway-build")
+            gym_opts = {
+              scheme: scheme,
+              configuration: configuration,
+              clean: true,
+              destination: conf[:destination],
+              output_directory: out_dir,
+              output_name: scheme.gsub(/[^A-Za-z0-9_.-]/, "_"),
+              include_symbols: true,
+              xcargs: "CURRENT_PROJECT_VERSION=#{build_number}"
+            }
+            if workspace
+              gym_opts[:workspace] = workspace
+            else
+              gym_opts[:project] = project
+            end
+            build_app(gym_opts)
+
+            upload_opts = {
+              api_key: api_key,
+              app_platform: conf[:pilot],
+              skip_waiting_for_build_processing: true
+            }
+            if key == "macos"
+              upload_opts[:pkg] = lane_context[SharedValues::PKG_OUTPUT_PATH] || UI.user_error!("pkg が生成されていない")
+            else
+              upload_opts[:ipa] = lane_context[SharedValues::IPA_OUTPUT_PATH] || UI.user_error!("ipa が生成されていない")
+            end
+            upload_to_testflight(upload_opts)
+
+            summary = ENV["GITHUB_STEP_SUMMARY"].to_s
+            unless summary.empty?
+              File.open(summary, "a") do |f|
+                f.puts "### TestFlight へアップロード完了"
+                f.puts ""
+                f.puts "| 項目 | 値 |"
+                f.puts "|---|---|"
+                f.puts "| Platform | #{key} |"
+                f.puts "| Scheme | #{scheme} |"
+                f.puts "| Build number | #{build_number} |"
+                f.puts "| Bundle IDs | #{bundle_ids.join(', ')} |"
+                f.puts ""
+                f.puts "App Store Connect 側の処理が終わると TestFlight に出る（通常数分〜数十分）。"
+              end
+            end
+          end
+          RUBY
+
+      - name: Build and upload to TestFlight
+        shell: bash
+        working-directory: ${{ runner.temp }}/runway
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_TOKEN: ${{ secrets.MATCH_GIT_TOKEN }}
+        run: fastlane testflight_upload
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-logs-${{ inputs.platform }}
+          path: ~/Library/Logs/gym
+          if-no-files-found: ignore
+          retention-days: 7

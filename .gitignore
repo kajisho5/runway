@@ -1,0 +1,6 @@
+secrets.env
+*.p8
+*.p12
+*.mobileprovision
+*.cer
+.DS_Store

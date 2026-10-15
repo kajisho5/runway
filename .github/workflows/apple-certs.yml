@@ -1,0 +1,138 @@
+# 証明書・プロファイルの作成/更新（Mac 不要）。runway の Actions タブから手動実行する。
+# 作った証明書とプロファイルは match が暗号化して hangar に保存する。
+# 新しいアプリ・新しい Bundle ID（Watch 等）を追加したら、まずこれを1回実行する。
+name: apple-certs
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "対象 OS（visionOS / Apple Watch は ios を選ぶ）"
+        type: choice
+        options: [ios, tvos, macos]
+        default: ios
+      app_identifiers:
+        description: "Bundle ID をカンマ区切りで（例: com.example.myapp,com.example.myapp.watchkitapp）"
+        type: string
+        required: true
+      type:
+        description: "appstore = TestFlight/App Store 用、development = 開発用"
+        type: choice
+        options: [appstore, development]
+        default: appstore
+      force:
+        description: "既存プロファイルを作り直す（Capability 追加・端末追加の後に使う）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-certs
+  cancel-in-progress: false
+
+jobs:
+  match:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      RW_PLATFORM: ${{ inputs.platform }}
+      RW_APP_IDENTIFIERS: ${{ inputs.app_identifiers }}
+      RW_TYPE: ${{ inputs.type }}
+      RW_FORCE: ${{ inputs.force }}
+      RW_MATCH_GIT_URL: https://github.com/${{ github.repository_owner }}/hangar.git
+      RW_MATCH_GIT_BRANCH: main
+      FASTLANE_SKIP_UPDATE_CHECK: "1"
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      FASTLANE_HIDE_CHANGELOG: "1"
+    steps:
+      - name: Install fastlane
+        shell: bash
+        run: |
+          if command -v fastlane >/dev/null 2>&1; then
+            echo "fastlane: プリインストール版を使用"
+          else
+            brew install fastlane
+          fi
+          fastlane --version | tail -1
+
+      - name: Write Fastfile
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/runway/fastlane"
+          cat > "$RUNNER_TEMP/runway/fastlane/Fastfile" <<'RUBY'
+          opt_out_usage
+          require "uri"
+
+          default_platform(:ios)
+
+          def need(key)
+            value = ENV[key].to_s.strip
+            UI.user_error!("#{key} が空") if value.empty?
+            value
+          end
+
+          def match_git_auth(url, token)
+            owner = URI(url).path.split("/").reject(&:empty?).first
+            UI.user_error!("match_git_url から owner を読めない: #{url}") if owner.to_s.empty?
+            ["#{owner}:#{token}"].pack("m0")
+          end
+
+          lane :sync_certs do
+            platform = need("RW_PLATFORM").downcase
+            type = need("RW_TYPE")
+            ids = need("RW_APP_IDENTIFIERS").split(/[\s,]+/).reject(&:empty?).uniq
+            git_url = need("RW_MATCH_GIT_URL")
+
+            setup_ci
+
+            api_key = app_store_connect_api_key(
+              key_id: need("ASC_KEY_ID"),
+              issuer_id: need("ASC_ISSUER_ID"),
+              key_content: need("ASC_KEY_P8_BASE64"),
+              is_key_content_base64: true,
+              in_house: false
+            )
+
+            opts = {
+              type: type,
+              readonly: false,
+              force: ENV["RW_FORCE"] == "true",
+              platform: platform,
+              app_identifier: ids,
+              team_id: need("APPLE_TEAM_ID"),
+              api_key: api_key,
+              generate_apple_certs: true,
+              git_url: git_url,
+              git_branch: need("RW_MATCH_GIT_BRANCH"),
+              git_basic_authorization: match_git_auth(git_url, need("MATCH_GIT_TOKEN"))
+            }
+            opts[:additional_cert_types] = ["mac_installer_distribution"] if platform == "macos" && type == "appstore"
+            match(opts)
+
+            summary = ENV["GITHUB_STEP_SUMMARY"].to_s
+            unless summary.empty?
+              File.open(summary, "a") do |f|
+                f.puts "### hangar に保存完了"
+                f.puts ""
+                f.puts "- platform: #{platform}"
+                f.puts "- type: #{type}"
+                f.puts "- Bundle IDs: #{ids.join(', ')}"
+              end
+            end
+          end
+          RUBY
+
+      - name: Create or update certificates and profiles
+        shell: bash
+        working-directory: ${{ runner.temp }}/runway
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_TOKEN: ${{ secrets.MATCH_GIT_TOKEN }}
+        run: fastlane sync_certs
