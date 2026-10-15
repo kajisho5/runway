@@ -5,7 +5,7 @@ Apple 全プラットフォーム（iPhone / iPad / Apple Watch / Mac / Apple TV
 | リポ | 公開範囲 | 役割 |
 |---|---|---|
 | `kajisho5/runway` | private | 共通ワークフロー、証明書作成ワークフロー、Secrets 配布スクリプト |
-| `kajisho5/hangar` | private | 証明書・プロファイルの保管庫。fastlane match が暗号化して書き込むので手で触らない |
+| `kajisho5/hanger` | private | 証明書・プロファイルの保管庫。fastlane match が暗号化して書き込むので手で触らない |
 | 各アプリのリポ | 任意 | `templates/testflight.yml` をコピーして数行書き換えるだけ |
 
 ## 中身
@@ -25,7 +25,7 @@ templates/testflight.yml                アプリ側に置く呼び出しワー�
 1. **runway の共有設定**
    runway の Settings → Actions → General → Access で「Accessible from repositories owned by the user」を選ぶ。これをしないと、他リポから private な runway のワークフローを呼べない。
 
-2. **hangar を確認**
+2. **hanger を確認**
    private になっていることを確認する。中身は空でよい（match がブランチ `main` に書き込む）。
 
 3. **App Store Connect API キーを作る**
@@ -36,7 +36,7 @@ templates/testflight.yml                アプリ側に置く呼び出しワー�
 
 4. **GitHub の Fine-grained PAT を作る**
    GitHub → Settings → Developer settings → Fine-grained tokens で作成する。
-   - Repository access：`hangar` のみ
+   - Repository access：`hanger` のみ
    - Permissions：Contents を Read and write
    - 有効期限が切れたら作り直して手順 6 をやり直す
 
@@ -52,7 +52,7 @@ templates/testflight.yml                アプリ側に置く呼び出しワー�
       | `ASC_ISSUER_ID` | Issuer ID |
       | `ASC_KEY_P8_BASE64` | `.p8` の中身をそのまま貼る（`-----BEGIN PRIVATE KEY-----` から `END` 行まで）。base64 化した文字列でも可 |
       | `APPLE_TEAM_ID` | Team ID |
-      | `MATCH_PASSWORD` | hangar 暗号化用のパスフレーズ（新しく決める。無くすと復号できない） |
+      | `MATCH_PASSWORD` | hanger 暗号化用のパスフレーズ（新しく決める。無くすと復号できない） |
       | `MATCH_GIT_TOKEN` | 手順 4 の PAT |
       | `SYNC_TOKEN` | 配布用の Fine-grained PAT（下記）。runway にだけ置き、配布はしない |
 
@@ -106,7 +106,7 @@ templates/testflight.yml                アプリ側に置く呼び出しワー�
 
 - GitHub Actions は、public リポの標準ランナーなら無料
 - private リポは無料枠を消費し、macOS ランナーは Linux の10倍のペースで減る（Free プランの 2,000 分なら、macOS で実質 200 分）
-- runway と hangar は private だが、`apple-certs` はたまにしか実行しないので消費は小さい。主に消費するのはアプリ側リポのビルド
+- runway と hanger は private だが、`apple-certs` はたまにしか実行しないので消費は小さい。主に消費するのはアプリ側リポのビルド
 
 ## 未検証事項
 

@@ -1,5 +1,5 @@
 # 証明書・プロファイルの作成/更新（Mac 不要）。runway の Actions タブから手動実行する。
-# 作った証明書とプロファイルは match が暗号化して hangar に保存する。
+# 作った証明書とプロファイルは match が暗号化して hanger に保存する。
 # 新しいアプリ・新しい Bundle ID（Watch 等）を追加したら、まずこれを1回実行する。
 name: apple-certs
 
@@ -41,7 +41,7 @@ jobs:
       RW_APP_IDENTIFIERS: ${{ inputs.app_identifiers }}
       RW_TYPE: ${{ inputs.type }}
       RW_FORCE: ${{ inputs.force }}
-      RW_MATCH_GIT_URL: https://github.com/${{ github.repository_owner }}/hangar.git
+      RW_MATCH_GIT_URL: https://github.com/${{ github.repository_owner }}/hanger.git
       RW_MATCH_GIT_BRANCH: main
       FASTLANE_SKIP_UPDATE_CHECK: "1"
       LANG: en_US.UTF-8
@@ -115,7 +115,7 @@ jobs:
             summary = ENV["GITHUB_STEP_SUMMARY"].to_s
             unless summary.empty?
               File.open(summary, "a") do |f|
-                f.puts "### hangar に保存完了"
+                f.puts "### hanger に保存完了"
                 f.puts ""
                 f.puts "- platform: #{platform}"
                 f.puts "- type: #{type}"

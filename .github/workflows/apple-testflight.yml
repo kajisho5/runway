@@ -59,7 +59,7 @@ on:
         type: string
         default: ""
       match_git_url:
-        description: "証明書リポの URL。空なら https://github.com/<owner>/hangar.git"
+        description: "証明書リポの URL。空なら https://github.com/<owner>/hanger.git"
         type: string
         default: ""
       match_git_branch:
@@ -102,7 +102,7 @@ jobs:
       RW_CODE_SIGN_IDENTITY: ${{ inputs.code_sign_identity }}
       RW_BUILD_NUMBER: ${{ inputs.build_number }}
       RW_PRE_BUILD: ${{ inputs.pre_build }}
-      RW_MATCH_GIT_URL: ${{ inputs.match_git_url || format('https://github.com/{0}/hangar.git', github.repository_owner) }}
+      RW_MATCH_GIT_URL: ${{ inputs.match_git_url || format('https://github.com/{0}/hanger.git', github.repository_owner) }}
       RW_MATCH_GIT_BRANCH: ${{ inputs.match_git_branch }}
       RW_SRC_DIR: ${{ github.workspace }}/${{ inputs.working_directory }}
       FASTLANE_SKIP_UPDATE_CHECK: "1"
@@ -263,7 +263,7 @@ jobs:
             mapping = lane_context[SharedValues::MATCH_PROVISIONING_PROFILE_MAPPING] || {}
             targets.each do |name, bundle_id|
               profile = mapping[bundle_id].to_s
-              UI.user_error!("#{bundle_id} のプロファイルが hangar に無い。runway の apple-certs を先に実行する") if profile.empty?
+              UI.user_error!("#{bundle_id} のプロファイルが hanger に無い。runway の apple-certs を先に実行する") if profile.empty?
               update_code_signing_settings(
                 path: project,
                 use_automatic_signing: false,
