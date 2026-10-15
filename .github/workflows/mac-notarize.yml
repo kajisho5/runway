@@ -130,6 +130,7 @@ jobs:
             asc.py next-build <bundle id> <platform> TestFlight 上の最大ビルド番号 + 1 を出力
             asc.py certs-list                        証明書一覧
             asc.py cert-create <TYPE[,TYPE...]> <csr.pem> <out.cer>   先頭から順に試す。全部ダメなら終了コード 3
+            asc.py cert-find <csr.pem> <out.cer>      CSR と同じ公開鍵の証明書を Apple 側から探して書き出す（無ければ終了コード 4）
             asc.py revoke-all                        API で作った DEVELOPMENT / DISTRIBUTION 証明書をすべて失効
             asc.py decrypt-key <in.enc> <out.key>    署名用秘密鍵を復号（.p8 から導くパスフレーズ候補を順に試す）
             asc.py encrypt-key <in.key> <out.enc>    署名用秘密鍵を暗号化（標準パスフレーズ）
@@ -333,6 +334,38 @@ jobs:
                       sys.exit(3)
 
 
+          def cmd_cert_find(csr_path, out_path):
+              """CSR と同じ公開鍵の証明書を Apple 側から探して DER で書き出す（サイトで手動発行した証明書の取り込み用）。
+              見つからなければ終了コード 4。"""
+              from cryptography import x509
+              from cryptography.hazmat.primitives import serialization
+
+              with open(csr_path, "rb") as f:
+                  want = x509.load_pem_x509_csr(f.read()).public_key().public_bytes(
+                      serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+              path = "/v1/certificates?" + urllib.parse.urlencode(
+                  {"limit": 200, "fields[certificates]": "certificateType,certificateContent,expirationDate,name"})
+              while path:
+                  _, res = api("GET", path)
+                  for c in res.get("data", []):
+                      a = c["attributes"]
+                      content = a.get("certificateContent")
+                      if not content:
+                          continue
+                      der = base64.b64decode(content)
+                      got = x509.load_der_x509_certificate(der).public_key().public_bytes(
+                          serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+                      if got == want:
+                          with open(out_path, "wb") as f:
+                              f.write(der)
+                          print(f"見つけた: {c['id']} {a.get('certificateType')}（期限 {(a.get('expirationDate') or '')[:10]}）")
+                          return
+                  nxt = res.get("links", {}).get("next")
+                  path = nxt.replace(API, "") if nxt else None
+              print("CSR に対応する証明書は Apple 側にまだ無い")
+              sys.exit(4)
+
+
           def cmd_revoke_all():
               targets = [c for c in list_certs()
                          if c["attributes"].get("certificateType") in MANAGED_CERT_TYPES
@@ -467,6 +500,7 @@ jobs:
               table = {
                   "write-key": (cmd_write_key, 0), "check": (cmd_check, 1), "next-build": (cmd_next_build, 2),
                   "certs-list": (cmd_certs_list, 0), "cert-create": (cmd_cert_create, 3), "revoke-all": (cmd_revoke_all, 0),
+                  "cert-find": (cmd_cert_find, 2),
                   "decrypt-key": (cmd_decrypt_key, 2), "encrypt-key": (cmd_encrypt_key, 2), "upload": (cmd_upload, 5),
               }
               if cmd not in table or len(args) != table[cmd][1]:

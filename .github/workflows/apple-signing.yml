@@ -4,9 +4,9 @@
 #   import-crosspoint crosspoint が ci/signing に持っている既存の証明書を hanger へ移す（新規発行しない。上限に当たらない）
 #   create            新しい鍵と証明書を発行して hanger に置く（Apple 側に証明書が 2 枚増える）
 #   revoke-and-create API で作った証明書を全部失効してから create（上限に当たったとき用。crosspoint の ci/signing も使えなくなる）
-#   create-developer-id Mac 向け配布（プラグイン・アプリの公証）用の Developer ID Application 証明書を作る。
-#                     API で作れなかった場合は CSR を hanger に置くので、developer.apple.com で手動発行して
-#                     hanger の signing/developer_id_application.cer としてアップロードする
+#   create-developer-id Mac 向け配布（プラグイン・アプリの公証）用の Developer ID Application 証明書を用意する。
+#                     Apple の制限で API では発行できない（Account Holder のみ）ので、初回は CSR を hanger に置く。
+#                     developer.apple.com でその CSR から発行したら、もう一度これを実行すると API 経由で取り込む
 name: apple-signing
 
 on:
@@ -151,6 +151,21 @@ jobs:
             openssl x509 -inform DER -in "$h/developer_id_application.cer" -noout -subject -enddate
             exit 0
           fi
+          # サイトで手動発行済みなら、hanger の CSR と同じ公開鍵の証明書を Apple 側から取り込む
+          if [ -f "$h/devid.csr" ] && [ -f "$h/devid.key.enc" ]; then
+            set +e
+            asc cert-find "$h/devid.csr" "$h/developer_id_application.cer"
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              rm -f "$h/devid.csr"
+              openssl x509 -inform DER -in "$h/developer_id_application.cer" -noout -subject -enddate
+              echo "RW_COMMIT_MSG=signing: 手動発行した Developer ID Application 証明書を取り込み" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            [ "$rc" -eq 4 ] || exit "$rc"
+            echo "CSR はあるが証明書はまだ発行されていない。API での発行を試す"
+          fi
           openssl genrsa -out "$d/devid.key" 2048
           openssl req -new -key "$d/devid.key" -subj "/CN=runway Developer ID/O=GitHub Actions" -out "$d/devid.csr"
           asc encrypt-key "$d/devid.key" "$h/devid.key.enc"
@@ -170,7 +185,7 @@ jobs:
               echo ""
               echo "1. hanger の signing/devid.csr をダウンロード"
               echo "2. https://developer.apple.com/account/resources/certificates/add → Developer ID Application → CSR をアップロード → 証明書をダウンロード"
-              echo "3. ダウンロードした .cer を hanger の signing/ に developer_id_application.cer という名前でアップロード"
+              echo "3. もう一度 apple-signing を create-developer-id で実行（発行済みの証明書を自動で取り込む）"
             } >> "$GITHUB_STEP_SUMMARY"
             echo "::warning::API で Developer ID 証明書を作れなかった。手順は実行結果の Summary を参照"
           fi
