@@ -52,7 +52,7 @@ templates/testflight.yml                アプリ側に置く呼び出しワー�
       | `ASC_ISSUER_ID` | Issuer ID |
       | `ASC_KEY_P8_BASE64` | `.p8` の中身をそのまま貼る（`-----BEGIN PRIVATE KEY-----` から `END` 行まで）。base64 化した文字列でも可 |
       | `APPLE_TEAM_ID` | Team ID |
-      | `MATCH_PASSWORD` | hanger 暗号化用のパスフレーズ（新しく決める。無くすと復号できない） |
+      | `MATCH_PASSWORD` | 省略可。省略すると `.p8` から自動生成する（API キーを作り直したら hanger の証明書も作り直しになる） |
       | `MATCH_GIT_TOKEN` | 手順 4 の PAT |
       | `SYNC_TOKEN` | 配布用の Fine-grained PAT（下記）。runway にだけ置き、配布はしない |
 

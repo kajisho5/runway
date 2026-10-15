@@ -76,7 +76,7 @@ on:
       APPLE_TEAM_ID:
         required: true
       MATCH_PASSWORD:
-        required: true
+        required: false
       MATCH_GIT_TOKEN:
         required: true
 
@@ -236,6 +236,14 @@ jobs:
             git_url = need("RW_MATCH_GIT_URL")
 
             setup_ci
+
+            if ENV["MATCH_PASSWORD"].to_s.strip.empty?
+              require "digest"
+              p8 = need("ASC_KEY_P8_BASE64")
+              pem = p8.include?("BEGIN PRIVATE KEY") ? p8 : p8.unpack1("m")
+              ENV["MATCH_PASSWORD"] = Digest::SHA256.hexdigest("runway-match:" + pem.gsub("\r\n", "\n").strip)
+              UI.message("MATCH_PASSWORD 未設定のため .p8 から自動生成")
+            end
 
             api_key = app_store_connect_api_key(
               key_id: need("ASC_KEY_ID"),
