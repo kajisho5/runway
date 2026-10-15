@@ -6,7 +6,7 @@ param(
   [string]$ReposFile = "repos.txt"
 )
 $ErrorActionPreference = "Stop"
-$Keys = @("ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_KEY_P8_BASE64", "APPLE_TEAM_ID", "MATCH_PASSWORD", "MATCH_GIT_TOKEN")
+$Keys = @("ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_KEY_P8_BASE64", "APPLE_TEAM_ID", "MATCH_GIT_TOKEN")
 
 function Fail($msg) { Write-Error "エラー: $msg"; exit 1 }
 

@@ -1,71 +1,72 @@
-# Apple 全プラットフォーム共通：ビルド → 署名 → TestFlight アップロード
-# 各アプリのリポから `uses: kajisho5/runway/.github/workflows/apple-testflight.yml@v1` で呼ぶ。
-# 呼び出し例は templates/testflight.yml、前提条件は README.md を参照。
+# Apple アプリを GitHub の Mac ランナーでビルドして TestFlight に送る共通ワークフロー（Mac 不要）。
+# 方式は kajisho5/crosspoint で TestFlight 到達済みのものを汎用化：
+#   署名 = xcodebuild の自動署名 + App Store Connect API キー（プロファイルは Apple 側で自動発行）
+#          ＋ 共有の署名用証明書（hanger の signing/、または呼び出し側リポの ci/signing）を一時キーチェーンに取り込む
+#          （毎回新しい証明書が作られて Apple の上限に当たるのを防ぐ）
+#   送信 = App Store Connect API の Build Uploads（xcodebuild の upload は鍵を拒否した実績があるので使わない）
+# 呼び出し例は templates/testflight.yml、準備は README.md。
 name: apple-testflight
 
 on:
   workflow_call:
     inputs:
-      platform:
-        description: "ios | tvos | visionos | macos（Apple Watch は ios に同梱して出す）"
+      bundle_id:
+        description: "メインアプリの Bundle ID（App Store Connect のアプリ記録と一致させる）"
         type: string
         required: true
       scheme:
-        description: "ビルドする Xcode スキーム"
-        type: string
-        required: true
-      project:
-        description: ".xcodeproj のパス（working_directory からの相対）。署名設定の書き換えに使うので workspace 利用時も必須"
+        description: "Xcode のスキーム"
         type: string
         required: true
       workspace:
-        description: ".xcworkspace のパス（使う場合のみ）"
+        description: ".xcworkspace のパス（working_directory からの相対）。workspace か project のどちらか"
         type: string
         default: ""
-      signing_targets:
-        description: "Target=bundle.id を改行かカンマ区切りで。1行目はメインアプリ。Watch・Widget 等の同梱ターゲットも全部書く"
+      project:
+        description: ".xcodeproj のパス（workspace が無い場合）"
         type: string
-        required: true
+        default: ""
+      platform:
+        description: "ios | tvos | visionos（Apple Watch アプリは ios に同梱）"
+        type: string
+        default: ios
       extra_sdks:
-        description: "同梱ターゲット用に追加で必要な SDK（例: watchOS）。カンマ/空白区切り"
+        description: "同梱ターゲット用に追加で入れる SDK（例: watchOS）。カンマ/空白区切り"
         type: string
         default: ""
       configuration:
-        description: "ビルド構成"
         type: string
         default: Release
-      code_sign_identity:
-        description: "署名 ID。match は Apple Distribution 証明書を作るので通常は変更不要"
-        type: string
-        default: Apple Distribution
       build_number:
-        description: "ビルド番号を固定したい場合のみ指定。空なら TestFlight 上の最新 +1"
+        description: "ビルド番号を固定する場合のみ。空なら TestFlight 上の最大 +1"
         type: string
         default: ""
-      xcode_version:
-        description: "maxim-lobanov/setup-xcode に渡す値"
+      node_version:
+        description: "Node を使うプロジェクト（Expo / React Native）なら版を指定（例: 22）"
         type: string
-        default: latest-stable
-      runner:
-        description: "GitHub ホステッドランナーのラベル"
+        default: ""
+      pre_build:
+        description: "ビルド前に実行するシェル（例: npm ci && cd ios && pod install）"
         type: string
-        default: macos-latest
+        default: ""
       working_directory:
-        description: "Xcode プロジェクトがあるディレクトリ（リポ直下なら .）"
         type: string
         default: .
-      pre_build:
-        description: "ビルド前に実行するシェル（例: xcodegen generate）"
+      xcode:
+        description: "使う Xcode のメジャー版（App Store Connect は iOS 26 SDK 以降を要求。エラー 90725 対策）"
+        type: string
+        default: "26"
+      runner:
+        type: string
+        default: macos-15
+      signing_source:
+        description: "署名用証明書の置き場所。hanger（既定）か、呼び出し側リポ内のディレクトリ（例: ci/signing）"
+        type: string
+        default: hanger
+      hanger_repo:
+        description: "証明書リポ。空なら <owner>/hanger"
         type: string
         default: ""
-      match_git_url:
-        description: "証明書リポの URL。空なら https://github.com/<owner>/hanger.git"
-        type: string
-        default: ""
-      match_git_branch:
-        description: "証明書リポのブランチ"
-        type: string
-        default: main
     secrets:
       ASC_KEY_ID:
         required: true
@@ -75,10 +76,12 @@ on:
         required: true
       APPLE_TEAM_ID:
         required: true
-      MATCH_PASSWORD:
-        required: false
       MATCH_GIT_TOKEN:
-        required: true
+        description: "hanger を読めるトークン（signing_source が hanger のとき必要）"
+        required: false
+      SIGNING_KEY_PASSWORD:
+        description: "署名用秘密鍵のパスフレーズ（任意。無ければ .p8 から導出）"
+        required: false
 
 permissions:
   contents: read
@@ -87,53 +90,448 @@ jobs:
   testflight:
     name: ${{ inputs.platform }} → TestFlight
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     concurrency:
       group: testflight-${{ github.repository }}-${{ inputs.platform }}
       cancel-in-progress: false
     env:
-      RW_PLATFORM: ${{ inputs.platform }}
+      CI: 1
+      EXPO_NO_TELEMETRY: 1
+      RW_BUNDLE_ID: ${{ inputs.bundle_id }}
       RW_SCHEME: ${{ inputs.scheme }}
-      RW_PROJECT: ${{ inputs.project }}
       RW_WORKSPACE: ${{ inputs.workspace }}
-      RW_SIGNING_TARGETS: ${{ inputs.signing_targets }}
+      RW_PROJECT: ${{ inputs.project }}
+      RW_PLATFORM: ${{ inputs.platform }}
       RW_EXTRA_SDKS: ${{ inputs.extra_sdks }}
       RW_CONFIGURATION: ${{ inputs.configuration }}
-      RW_CODE_SIGN_IDENTITY: ${{ inputs.code_sign_identity }}
       RW_BUILD_NUMBER: ${{ inputs.build_number }}
       RW_PRE_BUILD: ${{ inputs.pre_build }}
-      RW_MATCH_GIT_URL: ${{ inputs.match_git_url || format('https://github.com/{0}/hanger.git', github.repository_owner) }}
-      RW_MATCH_GIT_BRANCH: ${{ inputs.match_git_branch }}
-      RW_SRC_DIR: ${{ github.workspace }}/${{ inputs.working_directory }}
-      FASTLANE_SKIP_UPDATE_CHECK: "1"
-      LANG: en_US.UTF-8
-      LC_ALL: en_US.UTF-8
-      FASTLANE_HIDE_CHANGELOG: "1"
-      FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: "120"
+      RW_XCODE: ${{ inputs.xcode }}
+      RW_SIGNING_SOURCE: ${{ inputs.signing_source }}
+      RW_HANGER_REPO: ${{ inputs.hanger_repo || format('{0}/hanger', github.repository_owner) }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Validate inputs
         shell: bash
         run: |
           case "$RW_PLATFORM" in
-            ios|tvos|visionos|macos) ;;
-            *) echo "::error::platform は ios / tvos / visionos / macos のいずれか（指定値: $RW_PLATFORM）"; exit 1 ;;
+            ios) echo "RW_DEST=generic/platform=iOS" >> "$GITHUB_ENV" ;;
+            tvos) echo "RW_DEST=generic/platform=tvOS" >> "$GITHUB_ENV" ;;
+            visionos) echo "RW_DEST=generic/platform=visionOS" >> "$GITHUB_ENV" ;;
+            *) echo "::error::platform は ios / tvos / visionos（指定値: $RW_PLATFORM）。macOS は未対応"; exit 1 ;;
           esac
-          if [ ! -d "$RW_SRC_DIR/$RW_PROJECT" ]; then
-            echo "::error::project が見つからない: $RW_SRC_DIR/$RW_PROJECT"
-            exit 1
+          if [ -z "$RW_WORKSPACE" ] && [ -z "$RW_PROJECT" ]; then
+            echo "::error::workspace か project のどちらかを指定する"; exit 1
           fi
-          if [ -n "$RW_WORKSPACE" ] && [ ! -d "$RW_SRC_DIR/$RW_WORKSPACE" ]; then
-            echo "::error::workspace が見つからない: $RW_SRC_DIR/$RW_WORKSPACE"
-            exit 1
-          fi
+          # Secrets の前後の空白を除去して以降のステップへ渡す
+          for k in ASC_KEY_ID ASC_ISSUER_ID APPLE_TEAM_ID; do
+            v="${!k}"; v="$(printf '%s' "$v" | tr -d '[:space:]')"
+            [ -n "$v" ] || { echo "::error::Secret $k が未登録"; exit 1; }
+            echo "$k=$v" >> "$GITHUB_ENV"
+          done
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        if: inputs.node_version != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Install runway tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/runway"
+          python3 -m venv "$RUNNER_TEMP/runway/venv"
+          "$RUNNER_TEMP/runway/venv/bin/pip" install --quiet pyjwt cryptography
+          cat > "$RUNNER_TEMP/runway/asc.py" <<'PY'
+          # >>> asc.py (scripts/asc.py から scripts/embed.py で生成。直接編集しない)
+          #!/usr/bin/env python3
+          """runway 用 App Store Connect API ツール（Python 3 + pyjwt + cryptography、署名鍵の暗号処理は openssl）。
+
+          API のエンドポイントとフィールドは Apple の App Store Connect API（OpenAPI 仕様）に準拠：
+            GET /v1/apps, GET /v1/users, GET /v1/builds,
+            GET/POST/DELETE /v1/certificates,
+            POST /v1/buildUploads, POST/PATCH /v1/buildUploadFiles, GET /v1/buildUploads/{id}
+          （アップロードと証明書の処理は kajisho5/crosspoint の .github/scripts/asc_upload.py / asc_certs.py で実績のあるもの）
+
+          使い方:
+            asc.py write-key                         環境変数の .p8 を $RUNNER_TEMP/keys/AuthKey_<KEY_ID>.p8 に書き出す
+            asc.py check <bundle id>                 鍵の形式・API 認証・アプリ記録・Admin 権限を確認
+            asc.py next-build <bundle id> <platform> TestFlight 上の最大ビルド番号 + 1 を出力
+            asc.py certs-list                        証明書一覧
+            asc.py cert-create <DEVELOPMENT|DISTRIBUTION> <csr.pem> <out.cer>
+            asc.py revoke-all                        API で作った DEVELOPMENT / DISTRIBUTION 証明書をすべて失効
+            asc.py decrypt-key <in.enc> <out.key>    署名用秘密鍵を復号（.p8 から導くパスフレーズ候補を順に試す）
+            asc.py encrypt-key <in.key> <out.enc>    署名用秘密鍵を暗号化（標準パスフレーズ）
+            asc.py upload <ipa> <bundle id> <version> <build> <platform>
+
+          環境変数:
+            ASC_KEY_ID, ASC_ISSUER_ID
+            ASC_KEY_P8_BASE64   .p8 の中身（PEM のまま、または base64）
+            SIGNING_KEY_PASSWORD（任意）署名用秘密鍵のパスフレーズ。無ければ .p8 から導出
+            RUNNER_TEMP
+          platform: ios | tvos | visionos
+          """
+
+          import base64
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import sys
+          import tempfile
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          API = "https://api.appstoreconnect.apple.com"
+          PLATFORMS = {"ios": "IOS", "tvos": "TV_OS", "visionos": "VISION_OS"}
+          MANAGED_CERT_TYPES = {"DEVELOPMENT", "DISTRIBUTION", "IOS_DEVELOPMENT", "IOS_DISTRIBUTION"}
+
+
+          def die(msg, code=1):
+              print(f"::error::{msg}")
+              sys.exit(code)
+
+
+          def env(name):
+              value = os.environ.get(name, "")
+              if not value.strip():
+                  die(f"環境変数 {name} が空（Secrets 未登録の可能性）")
+              return value
+
+
+          def p8_raw():
+              return env("ASC_KEY_P8_BASE64")
+
+
+          def p8_pem():
+              raw = p8_raw()
+              if "BEGIN PRIVATE KEY" in raw:
+                  pem = raw
+              else:
+                  try:
+                      pem = base64.b64decode("".join(raw.split())).decode()
+                  except Exception:
+                      die("ASC_KEY_P8_BASE64 が PEM でも base64 でもない")
+                  if "BEGIN PRIVATE KEY" not in pem:
+                      die("ASC_KEY_P8_BASE64 を base64 として読んだが PEM ではなかった")
+              return pem.replace("\r\n", "\n").strip() + "\n"
+
+
+          def key_path():
+              return os.path.join(env("RUNNER_TEMP"), "keys", f"AuthKey_{env('ASC_KEY_ID').strip()}.p8")
+
+
+          def token():
+              import jwt  # pyjwt
+
+              now = int(time.time())
+              return jwt.encode(
+                  {"iss": env("ASC_ISSUER_ID").strip(), "iat": now, "exp": now + 600, "aud": "appstoreconnect-v1"},
+                  p8_pem(),
+                  algorithm="ES256",
+                  headers={"kid": env("ASC_KEY_ID").strip(), "typ": "JWT"},
+              )
+
+
+          def api(method, path, body=None, tolerate=False):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(
+                  API + path, data=data, method=method,
+                  headers={"Authorization": f"Bearer {token()}", "Content-Type": "application/json"},
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as res:
+                      raw = res.read()
+                      return res.status, (json.loads(raw) if raw else {})
+              except urllib.error.HTTPError as e:
+                  text = e.read().decode(errors="replace")
+                  if tolerate:
+                      return e.code, text
+                  print(f"{method} {path.split('?')[0]} -> HTTP {e.code}")
+                  print(text[:4000])
+                  sys.exit(1)
+
+
+          def app_id(bundle_id):
+              q = urllib.parse.urlencode({"filter[bundleId]": bundle_id, "fields[apps]": "bundleId,name"})
+              _, body = api("GET", f"/v1/apps?{q}")
+              data = [a for a in body.get("data", []) if a["attributes"].get("bundleId") == bundle_id]
+              if not data:
+                  die(f"App Store Connect に Bundle ID {bundle_id} のアプリが無い（App Store Connect → アプリ → ＋ で作成）")
+              return data[0]["id"], data[0]["attributes"].get("name")
+
+
+          # ---------------------------------------------------------------- commands
+
+          def cmd_write_key():
+              path = key_path()
+              os.makedirs(os.path.dirname(path), exist_ok=True)
+              with open(path, "w") as f:
+                  f.write(p8_pem())
+              os.chmod(path, 0o600)
+              print(path)
+
+
+          def cmd_check(bundle_id):
+              import re
+
+              ok = True
+              for name, pattern in (("ASC_KEY_ID", r"[A-Z0-9]{10}"),
+                                    ("ASC_ISSUER_ID", r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"),
+                                    ("APPLE_TEAM_ID", r"[A-Z0-9]{10}")):
+                  v = env(name)
+                  good = re.fullmatch(pattern, v.strip()) is not None
+                  print(f"{name}: 形式 {'OK' if good else '不正'}" + ("（前後に空白あり。自動で除去する）" if v != v.strip() else ""))
+                  ok &= good
+              p8_pem()
+              print("ASC_KEY_P8_BASE64: PEM として読めた")
+              if not ok:
+                  die("Secrets の形式が不正（上の行を参照）")
+
+              aid, name = app_id(bundle_id)
+              print(f"App Store Connect のアプリ: {name}（{bundle_id}）")
+              status, _ = api("GET", "/v1/users?limit=1", tolerate=True)
+              if status == 200:
+                  print("API キーの権限: Admin 相当（OK）")
+              else:
+                  print(f"::warning::GET /v1/users -> HTTP {status}。API キーが Admin でない可能性（自動署名のプロファイル発行に Admin が必要）")
+
+
+          def cmd_next_build(bundle_id, platform):
+              aid, _ = app_id(bundle_id)
+              base = {"filter[app]": aid, "sort": "-uploadedDate", "limit": "200", "fields[builds]": "version"}
+              q = dict(base, **{"filter[preReleaseVersion.platform]": PLATFORMS.get(platform, "IOS")})
+              status, body = api("GET", "/v1/builds?" + urllib.parse.urlencode(q), tolerate=True)
+              if status != 200:
+                  status, body = api("GET", "/v1/builds?" + urllib.parse.urlencode(base), tolerate=True)
+              latest = 0
+              if status == 200:
+                  for b in body.get("data", []):
+                      v = str(b["attributes"].get("version") or "").split(".")[0]
+                      if v.isdigit():
+                          latest = max(latest, int(v))
+              else:
+                  print(f"::warning::ビルド一覧を取得できなかった（HTTP {status}）。1 から始める", file=sys.stderr)
+              print(latest + 1)
+
+
+          def list_certs():
+              out = []
+              path = "/v1/certificates?" + urllib.parse.urlencode(
+                  {"limit": 200, "fields[certificates]": "certificateType,displayName,name,expirationDate,serialNumber"})
+              while path:
+                  _, res = api("GET", path)
+                  out.extend(res.get("data", []))
+                  nxt = res.get("links", {}).get("next")
+                  path = nxt.replace(API, "") if nxt else None
+              return out
+
+
+          def cmd_certs_list():
+              certs = list_certs()
+              print(f"証明書 {len(certs)} 件")
+              print(f"{'id':<12} {'type':<20} {'expires':<12} name")
+              for c in certs:
+                  a = c["attributes"]
+                  print(f"{c['id']:<12} {a.get('certificateType', ''):<20} {(a.get('expirationDate') or '')[:10]:<12} "
+                        f"{a.get('displayName') or a.get('name') or ''}")
+
+
+          def cmd_cert_create(cert_type, csr_path, out_path):
+              with open(csr_path) as f:
+                  csr = f.read()
+              _, res = api("POST", "/v1/certificates",
+                           {"data": {"type": "certificates", "attributes": {"certificateType": cert_type, "csrContent": csr}}})
+              a = res["data"]["attributes"]
+              with open(out_path, "wb") as f:
+                  f.write(base64.b64decode(a["certificateContent"]))
+              print(f"{cert_type} 証明書を作成: {res['data']['id']}（期限 {(a.get('expirationDate') or '')[:10]}）")
+
+
+          def cmd_revoke_all():
+              targets = [c for c in list_certs()
+                         if c["attributes"].get("certificateType") in MANAGED_CERT_TYPES
+                         and (c["attributes"].get("displayName") or "") == "Created via API"]
+              if not targets:
+                  print("失効対象なし")
+                  return
+              for c in targets:
+                  status, text = api("DELETE", f"/v1/certificates/{c['id']}", tolerate=True)
+                  print(f"{c['id']}: {'失効' if status in (200, 204) else f'失敗 HTTP {status}'}")
+
+
+          def password_candidates():
+              """署名用秘密鍵のパスフレーズ候補。先頭が標準（新規暗号化に使う）。
+              crosspoint の signing.yml は sha256(printf '%s' "$APPSTORE_P8") を使うので、改行の有無違いも候補に入れる。"""
+              explicit = os.environ.get("SIGNING_KEY_PASSWORD", "")
+              if explicit:
+                  return [explicit]
+              pem = p8_pem()
+              raw = p8_raw()
+              crlf = pem.replace("\n", "\r\n")
+              forms = [pem, pem.rstrip("\n"), raw, raw.strip(), raw.strip() + "\n",
+                       crlf, crlf.rstrip("\n"), crlf.rstrip("\r\n")]
+              out = []
+              for s in forms:
+                  h = hashlib.sha256(s.encode()).hexdigest()
+                  if h not in out:
+                      out.append(h)
+              return out
+
+
+          def openssl(args, password):
+              return subprocess.run(["openssl", *args, "-pass", "env:RW_PASS"],
+                                    env=dict(os.environ, RW_PASS=password), capture_output=True)
+
+
+          def cmd_decrypt_key(src, dst):
+              for i, pw in enumerate(password_candidates()):
+                  r = openssl(["enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "200000", "-in", src, "-out", dst], pw)
+                  if r.returncode == 0:
+                      check = subprocess.run(["openssl", "pkey", "-in", dst, "-noout"], capture_output=True)
+                      if check.returncode == 0:
+                          print(f"署名用秘密鍵を復号した（候補 {i + 1}）")
+                          return
+                  if os.path.exists(dst):
+                      os.remove(dst)
+              die("署名用秘密鍵を復号できない。.p8 が変わった可能性。runway の apple-signing を action=create で実行し直す")
+
+
+          def cmd_encrypt_key(src, dst):
+              pw = password_candidates()[0]
+              r = openssl(["enc", "-aes-256-cbc", "-pbkdf2", "-iter", "200000", "-salt", "-in", src, "-out", dst], pw)
+              if r.returncode != 0:
+                  print(r.stderr.decode(errors="replace"))
+                  die("暗号化に失敗")
+              print(f"暗号化した: {dst}")
+
+
+          def cmd_upload(ipa, bundle_id, version, build, platform):
+              size = os.path.getsize(ipa)
+              print(f"{os.path.basename(ipa)}: {size} bytes, version {version} ({build}), platform {platform}")
+              aid, _ = app_id(bundle_id)
+
+              _, res = api("POST", "/v1/buildUploads", {"data": {
+                  "type": "buildUploads",
+                  "attributes": {"cfBundleShortVersionString": version, "cfBundleVersion": build,
+                                 "platform": PLATFORMS.get(platform, "IOS")},
+                  "relationships": {"app": {"data": {"type": "apps", "id": aid}}},
+              }})
+              upload = res["data"]
+              print("build upload:", upload["id"])
+
+              _, res = api("POST", "/v1/buildUploadFiles", {"data": {
+                  "type": "buildUploadFiles",
+                  "attributes": {"fileName": os.path.basename(ipa), "fileSize": size, "uti": "com.apple.ipa",
+                                 "assetType": "ASSET"},
+                  "relationships": {"buildUpload": {"data": {"type": "buildUploads", "id": upload["id"]}}},
+              }})
+              file = res["data"]
+              operations = file["attributes"].get("uploadOperations") or []
+              print(f"build upload file: {file['id']}, {len(operations)} part(s)")
+
+              md5 = hashlib.md5()
+              with open(ipa, "rb") as f:
+                  for chunk in iter(lambda: f.read(1 << 20), b""):
+                      md5.update(chunk)
+                  for n, op in enumerate(operations, 1):
+                      f.seek(op["offset"])
+                      part = f.read(op["length"])
+                      headers = {h["name"]: h["value"] for h in op.get("requestHeaders") or []}
+                      req = urllib.request.Request(op["url"], data=part, method=op["method"], headers=headers)
+                      try:
+                          with urllib.request.urlopen(req, timeout=300) as r:
+                              print(f"part {n}/{len(operations)}: HTTP {r.status}")
+                      except urllib.error.HTTPError as e:
+                          print(f"part {n}/{len(operations)}: HTTP {e.code}")
+                          print(e.read().decode(errors="replace")[:2000])
+                          sys.exit(1)
+
+              api("PATCH", f"/v1/buildUploadFiles/{file['id']}", {"data": {
+                  "type": "buildUploadFiles", "id": file["id"],
+                  "attributes": {"uploaded": True,
+                                 "sourceFileChecksums": {"file": {"hash": md5.hexdigest(), "algorithm": "MD5"}}},
+              }})
+              print("アップロード完了。App Store Connect の処理を待つ")
+
+              deadline = time.time() + 30 * 60
+              last = None
+              while time.time() < deadline:
+                  _, res = api("GET", f"/v1/buildUploads/{upload['id']}")
+                  state = res["data"]["attributes"].get("state") or {}
+                  if state.get("state") != last:
+                      last = state.get("state")
+                      print("state:", last)
+                  for kind in ("errors", "warnings", "infos"):
+                      for d in state.get(kind) or []:
+                          print(f"  {kind[:-1]}: {d.get('code')}: {d.get('description')}")
+                  if last == "COMPLETE":
+                      print("TestFlight に届いた（App Store Connect の TestFlight タブに数分で出る）")
+                      return
+                  if last == "FAILED":
+                      die("App Store Connect がビルドを拒否した（上のエラー参照）")
+                  time.sleep(20)
+              print("::warning::30 分たっても処理中。App Store Connect の TestFlight タブを確認")
+
+
+          def main():
+              if len(sys.argv) < 2:
+                  print(__doc__)
+                  sys.exit(2)
+              cmd, args = sys.argv[1], sys.argv[2:]
+              table = {
+                  "write-key": (cmd_write_key, 0), "check": (cmd_check, 1), "next-build": (cmd_next_build, 2),
+                  "certs-list": (cmd_certs_list, 0), "cert-create": (cmd_cert_create, 3), "revoke-all": (cmd_revoke_all, 0),
+                  "decrypt-key": (cmd_decrypt_key, 2), "encrypt-key": (cmd_encrypt_key, 2), "upload": (cmd_upload, 5),
+              }
+              if cmd not in table or len(args) != table[cmd][1]:
+                  print(__doc__)
+                  sys.exit(2)
+              table[cmd][0](*args)
+
+
+          if __name__ == "__main__":
+              main()
+          # <<< asc.py
+          PY
+          printf '#!/bin/sh\nexec "%s" "%s" "$@"\n' "$RUNNER_TEMP/runway/venv/bin/python" "$RUNNER_TEMP/runway/asc.py" > "$RUNNER_TEMP/runway/asc"
+          chmod +x "$RUNNER_TEMP/runway/asc"
+          echo "$RUNNER_TEMP/runway" >> "$GITHUB_PATH"
+
+      - name: Check App Store Connect access
+        shell: bash
+        env:
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          asc write-key > /dev/null
+          asc check "$RW_BUNDLE_ID"
 
       - name: Select Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: ${{ inputs.xcode_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidates=()
+          for x in /Applications/Xcode_"$RW_XCODE"*.app; do
+            [ -d "$x" ] || continue
+            case "$x" in *[Bb]eta*) continue ;; esac
+            candidates+=("$x")
+          done
+          xcode=""
+          [ "${#candidates[@]}" -eq 0 ] || xcode=$(printf '%s\n' "${candidates[@]}" | sort -V | tail -n 1)
+          if [ -z "$xcode" ]; then
+            echo "::error::このランナーに Xcode $RW_XCODE が無い。入っている Xcode:"; ls -d /Applications/Xcode*.app; exit 1
+          fi
+          sudo xcode-select -s "$xcode/Contents/Developer"
+          xcodebuild -version
 
       - name: Ensure platform SDKs
         shell: bash
@@ -143,37 +541,14 @@ jobs:
           ensure() {
             local name="$1" sdk
             case "$name" in
-              iOS) sdk=iphoneos ;;
-              watchOS) sdk=watchos ;;
-              tvOS) sdk=appletvos ;;
-              visionOS) sdk=xros ;;
-              macOS) return 0 ;;
+              iOS) sdk=iphoneos ;; watchOS) sdk=watchos ;; tvOS) sdk=appletvos ;; visionOS) sdk=xros ;;
               *) echo "::error::未知の SDK 名: $name（iOS / watchOS / tvOS / visionOS）"; exit 1 ;;
             esac
-            if grep -q -- "-sdk ${sdk}[0-9]" <<<"$SDKS"; then
-              echo "$name SDK: インストール済み"
-            else
-              echo "$name SDK が無いのでダウンロードする"
-              xcodebuild -downloadPlatform "$name"
-            fi
+            if grep -q -- "-sdk ${sdk}[0-9]" <<<"$SDKS"; then echo "$name SDK: あり"
+            else echo "$name SDK をダウンロード"; xcodebuild -downloadPlatform "$name"; fi
           }
-          case "$RW_PLATFORM" in
-            ios) ensure iOS ;;
-            tvos) ensure tvOS ;;
-            visionos) ensure visionOS ;;
-            macos) ;;
-          esac
+          case "$RW_PLATFORM" in ios) ensure iOS ;; tvos) ensure tvOS ;; visionos) ensure visionOS ;; esac
           for p in ${RW_EXTRA_SDKS//,/ }; do ensure "$p"; done
-
-      - name: Install fastlane
-        shell: bash
-        run: |
-          if command -v fastlane >/dev/null 2>&1; then
-            echo "fastlane: プリインストール版を使用"
-          else
-            brew install fastlane
-          fi
-          fastlane --version | tail -1
 
       - name: Pre-build
         if: inputs.pre_build != ''
@@ -181,185 +556,182 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
         run: eval "$RW_PRE_BUILD"
 
-      - name: Write Fastfile
+      - name: Import signing certificates
+        shell: bash
+        env:
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          HANGER_TOKEN: ${{ secrets.MATCH_GIT_TOKEN }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/sign"; mkdir -p "$dir"
+          if [ "$RW_SIGNING_SOURCE" = "hanger" ]; then
+            [ -n "$HANGER_TOKEN" ] || { echo "::error::Secret MATCH_GIT_TOKEN（hanger を読むトークン）が未登録"; exit 1; }
+            auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HANGER_TOKEN" | base64 | tr -d '\n')"
+            echo "::add-mask::$auth"
+            git -c http.extraheader="$auth" clone --quiet --depth 1 "https://github.com/$RW_HANGER_REPO.git" "$dir/hanger" \
+              || { echo "::error::$RW_HANGER_REPO を読めない（MATCH_GIT_TOKEN の対象リポ・権限を確認）"; exit 1; }
+            src="$dir/hanger/signing"
+          else
+            src="$GITHUB_WORKSPACE/$RW_SIGNING_SOURCE"
+          fi
+          if [ ! -f "$src/ios.key.enc" ]; then
+            echo "::error::署名用証明書が無い（$src）。runway の Actions → apple-signing を実行する"; exit 1
+          fi
+          asc decrypt-key "$src/ios.key.enc" "$dir/ios.key"
+          kc="$RUNNER_TEMP/build.keychain-db"; kcpass="$(uuidgen)"
+          security create-keychain -p "$kcpass" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kcpass" "$kc"
+          for f in development distribution; do
+            openssl x509 -inform DER -in "$src/$f.cer" -out "$dir/$f.pem"
+            openssl pkcs12 -export -inkey "$dir/ios.key" -in "$dir/$f.pem" -name "$f" -out "$dir/$f.p12" -passout "pass:$kcpass"
+            security import "$dir/$f.p12" -k "$kc" -P "$kcpass" -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productbuild
+          done
+          curl -fsSL -o "$dir/AppleWWDRCAG3.cer" https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer
+          security import "$dir/AppleWWDRCAG3.cer" -k "$kc" -T /usr/bin/codesign || true
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpass" "$kc" > /dev/null
+          # shellcheck disable=SC2046  # 既存キーチェーンの一覧を語分割して渡す
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "$kc"
+          rm -rf "$dir/ios.key" "$dir"/*.p12 "$dir/hanger"
+          echo "署名 ID:"
+          security find-identity -v -p codesigning "$kc" | sed 's/[0-9A-F]\{40\}/<sha1>/'
+
+      - name: Set build number
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          n="$RW_BUILD_NUMBER"
+          [ -n "$n" ] || n="$(asc next-build "$RW_BUNDLE_ID" "$RW_PLATFORM")"
+          echo "RW_BUILD=$n" >> "$GITHUB_ENV"
+          echo "ビルド番号: $n"
+          if [ -n "$RW_WORKSPACE" ]; then target=(-workspace "$RW_WORKSPACE"); else target=(-project "$RW_PROJECT"); fi
+          xcodebuild "${target[@]}" -scheme "$RW_SCHEME" -configuration "$RW_CONFIGURATION" -destination "$RW_DEST" \
+            -showBuildSettings -json 2>/dev/null > "$RUNNER_TEMP/settings.json" || true
+          # Info.plist に CFBundleVersion が直書きされている場合（Expo prebuild など）は直接書き換える。
+          # $(CURRENT_PROJECT_VERSION) 参照なら archive 時の CURRENT_PROJECT_VERSION で入る
+          python3 - "$RUNNER_TEMP/settings.json" "$n" <<'PY'
+          import json, os, plistlib, sys
+          path, build = sys.argv[1], sys.argv[2]
+          try:
+              entries = json.load(open(path))
+          except Exception:
+              print("::warning::ビルド設定を読めなかった。CURRENT_PROJECT_VERSION のみで設定する")
+              sys.exit(0)
+          seen = set()
+          for e in entries:
+              s = e.get("buildSettings", {})
+              rel = s.get("INFOPLIST_FILE")
+              if not rel:
+                  continue
+              p = rel if os.path.isabs(rel) else os.path.join(s.get("SRCROOT", "."), rel)
+              p = os.path.normpath(p)
+              if p in seen or not os.path.isfile(p):
+                  continue
+              seen.add(p)
+              with open(p, "rb") as f:
+                  data = plistlib.load(f)
+              cur = str(data.get("CFBundleVersion", ""))
+              if cur and "$(" not in cur:
+                  data["CFBundleVersion"] = build
+                  with open(p, "wb") as f:
+                      plistlib.dump(data, f)
+                  print(f"{p}: CFBundleVersion {cur} → {build}")
+              else:
+                  print(f"{p}: CFBundleVersion は {cur or '(なし)'}（CURRENT_PROJECT_VERSION で設定）")
+          PY
+
+      - name: Archive
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          set -o pipefail
+          if [ -n "$RW_WORKSPACE" ]; then target=(-workspace "$RW_WORKSPACE"); else target=(-project "$RW_PROJECT"); fi
+          key="$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
+          xcodebuild "${target[@]}" \
+            -scheme "$RW_SCHEME" \
+            -configuration "$RW_CONFIGURATION" \
+            -destination "$RW_DEST" \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$key" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            CURRENT_PROJECT_VERSION="$RW_BUILD" \
+            archive 2>&1 | tee "$RUNNER_TEMP/archive.log" | grep -E "error:|ARCHIVE (SUCCEEDED|FAILED)|\*\* " || true
+          grep -q "ARCHIVE SUCCEEDED" "$RUNNER_TEMP/archive.log" || { echo "::error::archive に失敗（Artifacts の testflight-logs の archive.log 参照）"; exit 1; }
+
+      - name: Export .ipa
         shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/runway/fastlane"
-          cat > "$RUNNER_TEMP/runway/fastlane/Fastfile" <<'RUBY'
-          opt_out_usage
-          require "uri"
-          require "tmpdir"
+          set -o pipefail
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>export</string>
+            <key>teamID</key><string>$APPLE_TEAM_ID</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict>
+          </plist>
+          PLIST
+          key="$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$key" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            2>&1 | tee "$RUNNER_TEMP/export.log"
 
-          default_platform(:ios)
-
-          PLATFORMS = {
-            "ios"      => { match: "ios",   pilot: "ios",       destination: "generic/platform=iOS" },
-            "visionos" => { match: "ios",   pilot: "xros",      destination: "generic/platform=visionOS" },
-            "tvos"     => { match: "tvos",  pilot: "appletvos", destination: "generic/platform=tvOS" },
-            "macos"    => { match: "macos", pilot: "osx",       destination: "generic/platform=macOS" },
-          }.freeze
-
-          def need(key)
-            value = ENV[key].to_s.strip
-            UI.user_error!("#{key} が空") if value.empty?
-            value
-          end
-
-          def match_git_auth(url, token)
-            owner = URI(url).path.split("/").reject(&:empty?).first
-            UI.user_error!("match_git_url から owner を読めない: #{url}") if owner.to_s.empty?
-            ["#{owner}:#{token}"].pack("m0")
-          end
-
-          def parse_targets(raw)
-            raw.split(/[\n,]/).map(&:strip).reject(&:empty?).map do |entry|
-              name, bundle_id = entry.split("=", 2).map { |s| s.to_s.strip }
-              UI.user_error!("signing_targets は Target=bundle.id の形式: #{entry}") if name.empty? || bundle_id.empty?
-              [name, bundle_id]
-            end
-          end
-
-          lane :testflight_upload do
-            key = need("RW_PLATFORM").downcase
-            conf = PLATFORMS[key] || UI.user_error!("未対応の platform: #{key}")
-
-            src = need("RW_SRC_DIR")
-            project = File.expand_path(need("RW_PROJECT"), src)
-            workspace_rel = ENV["RW_WORKSPACE"].to_s.strip
-            workspace = workspace_rel.empty? ? nil : File.expand_path(workspace_rel, src)
-
-            targets = parse_targets(need("RW_SIGNING_TARGETS"))
-            bundle_ids = targets.map(&:last).uniq
-            team_id = need("APPLE_TEAM_ID")
-            configuration = need("RW_CONFIGURATION")
-            scheme = need("RW_SCHEME")
-            git_url = need("RW_MATCH_GIT_URL")
-
-            setup_ci
-
-            if ENV["MATCH_PASSWORD"].to_s.strip.empty?
-              require "digest"
-              p8 = need("ASC_KEY_P8_BASE64")
-              pem = p8.include?("BEGIN PRIVATE KEY") ? p8 : p8.unpack1("m")
-              ENV["MATCH_PASSWORD"] = Digest::SHA256.hexdigest("runway-match:" + pem.gsub("\r\n", "\n").strip)
-              UI.message("MATCH_PASSWORD 未設定のため .p8 から自動生成")
-            end
-
-            api_key = app_store_connect_api_key(
-              key_id: need("ASC_KEY_ID"),
-              issuer_id: need("ASC_ISSUER_ID"),
-              key_content: need("ASC_KEY_P8_BASE64"),
-              is_key_content_base64: !need("ASC_KEY_P8_BASE64").include?("BEGIN PRIVATE KEY"),
-              in_house: false
-            )
-
-            match_opts = {
-              type: "appstore",
-              readonly: true,
-              platform: conf[:match],
-              app_identifier: bundle_ids,
-              team_id: team_id,
-              api_key: api_key,
-              generate_apple_certs: true,
-              git_url: git_url,
-              git_branch: need("RW_MATCH_GIT_BRANCH"),
-              git_basic_authorization: match_git_auth(git_url, need("MATCH_GIT_TOKEN"))
-            }
-            match_opts[:additional_cert_types] = ["mac_installer_distribution"] if key == "macos"
-            match(match_opts)
-
-            mapping = lane_context[SharedValues::MATCH_PROVISIONING_PROFILE_MAPPING] || {}
-            targets.each do |name, bundle_id|
-              profile = mapping[bundle_id].to_s
-              UI.user_error!("#{bundle_id} のプロファイルが hanger に無い。runway の apple-certs を先に実行する") if profile.empty?
-              update_code_signing_settings(
-                path: project,
-                use_automatic_signing: false,
-                targets: [name],
-                build_configurations: [configuration],
-                team_id: team_id,
-                code_sign_identity: need("RW_CODE_SIGN_IDENTITY"),
-                profile_name: profile
-              )
-            end
-
-            build_number = ENV["RW_BUILD_NUMBER"].to_s.strip
-            if build_number.empty?
-              latest = latest_testflight_build_number(
-                api_key: api_key,
-                app_identifier: bundle_ids.first,
-                platform: conf[:pilot],
-                initial_build_number: 0
-              )
-              build_number = (latest.to_s.split(".").first.to_i + 1).to_s
-            end
-            UI.important("Build number: #{build_number}")
-
-            out_dir = File.join(ENV["RUNNER_TEMP"] || Dir.tmpdir, "runway-build")
-            gym_opts = {
-              scheme: scheme,
-              configuration: configuration,
-              clean: true,
-              destination: conf[:destination],
-              output_directory: out_dir,
-              output_name: scheme.gsub(/[^A-Za-z0-9_.-]/, "_"),
-              include_symbols: true,
-              xcargs: "CURRENT_PROJECT_VERSION=#{build_number}"
-            }
-            if workspace
-              gym_opts[:workspace] = workspace
-            else
-              gym_opts[:project] = project
-            end
-            build_app(gym_opts)
-
-            upload_opts = {
-              api_key: api_key,
-              app_platform: conf[:pilot],
-              skip_waiting_for_build_processing: true
-            }
-            if key == "macos"
-              upload_opts[:pkg] = lane_context[SharedValues::PKG_OUTPUT_PATH] || UI.user_error!("pkg が生成されていない")
-            else
-              upload_opts[:ipa] = lane_context[SharedValues::IPA_OUTPUT_PATH] || UI.user_error!("ipa が生成されていない")
-            end
-            upload_to_testflight(upload_opts)
-
-            summary = ENV["GITHUB_STEP_SUMMARY"].to_s
-            unless summary.empty?
-              File.open(summary, "a") do |f|
-                f.puts "### TestFlight へアップロード完了"
-                f.puts ""
-                f.puts "| 項目 | 値 |"
-                f.puts "|---|---|"
-                f.puts "| Platform | #{key} |"
-                f.puts "| Scheme | #{scheme} |"
-                f.puts "| Build number | #{build_number} |"
-                f.puts "| Bundle IDs | #{bundle_ids.join(', ')} |"
-                f.puts ""
-                f.puts "App Store Connect 側の処理が終わると TestFlight に出る（通常数分〜数十分）。"
-              end
-            end
-          end
-          RUBY
-
-      - name: Build and upload to TestFlight
+      - name: Upload to TestFlight
         shell: bash
-        working-directory: ${{ runner.temp }}/runway
         env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
-          MATCH_GIT_TOKEN: ${{ secrets.MATCH_GIT_TOKEN }}
-        run: fastlane testflight_upload
+        run: |
+          set -euo pipefail
+          ipa=$(find "$RUNNER_TEMP/export" -maxdepth 1 -name '*.ipa' | head -n 1)
+          [ -n "$ipa" ] || { echo "::error::.ipa が書き出されていない（export.log 参照）"; exit 1; }
+          info="$RUNNER_TEMP/App.xcarchive/Info.plist"
+          version=$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:CFBundleShortVersionString' "$info")
+          build=$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:CFBundleVersion' "$info")
+          asc upload "$ipa" "$RW_BUNDLE_ID" "$version" "$build" "$RW_PLATFORM" 2>&1 | tee "$RUNNER_TEMP/upload.log"
+          {
+            echo "### TestFlight へ送信完了"
+            echo ""
+            echo "| 項目 | 値 |"
+            echo "|---|---|"
+            echo "| Bundle ID | $RW_BUNDLE_ID |"
+            echo "| Platform | $RW_PLATFORM |"
+            echo "| Version | $version ($build) |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload build logs on failure
-        if: failure()
+      - name: Clean up
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/keys" "$RUNNER_TEMP/sign"
+          security delete-keychain "$RUNNER_TEMP/build.keychain-db" 2>/dev/null || true
+
+      - name: Upload logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xcodebuild-logs-${{ inputs.platform }}
-          path: ~/Library/Logs/gym
+          name: testflight-logs-${{ inputs.platform }}
+          path: |
+            ${{ runner.temp }}/archive.log
+            ${{ runner.temp }}/export.log
+            ${{ runner.temp }}/upload.log
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 14

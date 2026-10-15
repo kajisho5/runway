@@ -1,39 +1,48 @@
 # アプリ側リポに .github/workflows/testflight.yml として置く雛形。
-# MyApp / com.example.* は仮の値なので自分のアプリに置き換える。
+# com.example.myapp / MyApp は仮の値なので、自分のアプリの値に置き換える。
 name: testflight
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:      # GitHub の Actions タブ／iPhone の GitHub アプリから手動実行
   push:
-    tags: ["v*"]
+    tags: ["v*"]          # v1.0.0 などのタグを push しても実行
 
 permissions:
   contents: read
 
 jobs:
-  # iPhone / iPad（Apple Watch アプリを同梱する場合もこのジョブ1本）
+  # --- 例1: Swift / SwiftUI のアプリ（.xcodeproj だけ） ---
   ios:
     uses: kajisho5/runway/.github/workflows/apple-testflight.yml@v1
     with:
-      platform: ios
+      bundle_id: com.example.myapp
       project: MyApp.xcodeproj
       scheme: MyApp
-      # 1行目はメインアプリ。同梱ターゲット（Watch・Widget・Extension）も全部書く
-      signing_targets: |
-        MyApp=com.example.myapp
-        MyAppWatch=com.example.myapp.watchkitapp
-      extra_sdks: watchOS
-      # XcodeGen 等でプロジェクトを生成する場合:
-      # pre_build: brew install xcodegen && xcodegen generate
-    secrets: inherit
+      # Apple Watch アプリを同梱する場合だけ:
+      # extra_sdks: watchOS
+    secrets: inherit       # runway の sync-secrets が配った Secrets をそのまま渡す
 
-  # 他の OS も出すならジョブを足す（例: Mac）
-  # macos:
+  # --- 例2: Expo / React Native のアプリ（ios/ をコミット済み） ---
+  # ios:
   #   uses: kajisho5/runway/.github/workflows/apple-testflight.yml@v1
   #   with:
-  #     platform: macos
-  #     project: MyApp.xcodeproj
-  #     scheme: MyAppMac
-  #     signing_targets: |
-  #       MyAppMac=com.example.myapp
+  #     bundle_id: com.example.myapp
+  #     workspace: ios/MyApp.xcworkspace
+  #     scheme: MyApp
+  #     node_version: "22"
+  #     pre_build: npm ci && cd ios && pod install
   #   secrets: inherit
+
+  # --- 例3: Secrets の名前が違うリポ（crosspoint 方式の APPSTORE_* など）から使う ---
+  # ios:
+  #   uses: kajisho5/runway/.github/workflows/apple-testflight.yml@v1
+  #   with:
+  #     bundle_id: com.example.myapp
+  #     workspace: MyApp.xcworkspace
+  #     scheme: MyApp
+  #     signing_source: ci/signing      # 証明書をリポ内に持っている場合
+  #   secrets:
+  #     ASC_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
+  #     ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+  #     ASC_KEY_P8_BASE64: ${{ secrets.APPSTORE_P8 }}
+  #     APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}

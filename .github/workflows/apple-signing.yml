@@ -1,0 +1,166 @@
+# 全アプリ共通の署名用証明書（Apple Development / Apple Distribution）を hanger の signing/ に用意する。
+# runway の Actions タブから手動実行。普段は 1 回やれば終わり（証明書は 1 年で期限切れ → 再実行）。
+#   status            hanger の状態と Apple 側の証明書一覧を表示（何も変更しない）
+#   import-crosspoint crosspoint が ci/signing に持っている既存の証明書を hanger へ移す（新規発行しない。上限に当たらない）
+#   create            新しい鍵と証明書を発行して hanger に置く（Apple 側に証明書が 2 枚増える）
+#   revoke-and-create API で作った証明書を全部失効してから create（上限に当たったとき用。crosspoint の ci/signing も使えなくなる）
+name: apple-signing
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [status, import-crosspoint, create, revoke-and-create]
+        default: status
+      import_from:
+        description: "import-crosspoint の取り込み元（owner/repo:dir）"
+        type: string
+        default: kajisho5/crosspoint:ci/signing
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-signing
+  cancel-in-progress: false
+
+jobs:
+  signing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RW_ACTION: ${{ inputs.action }}
+      RW_IMPORT_FROM: ${{ inputs.import_from }}
+      RW_HANGER_REPO: ${{ github.repository_owner }}/hanger
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+      SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+      HANGER_TOKEN: ${{ secrets.MATCH_GIT_TOKEN }}
+    steps:
+      - name: Checkout runway
+        uses: actions/checkout@v4
+
+      - name: Set up tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet pyjwt cryptography
+          printf '#!/bin/sh\nexec "%s" "%s" "$@"\n' "$RUNNER_TEMP/venv/bin/python" "$GITHUB_WORKSPACE/scripts/asc.py" > "$RUNNER_TEMP/asc"
+          chmod +x "$RUNNER_TEMP/asc"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          for k in ASC_KEY_ID ASC_ISSUER_ID APPLE_TEAM_ID; do
+            v="${!k}"; v="$(printf '%s' "$v" | tr -d '[:space:]')"
+            [ -n "$v" ] || { echo "::error::runway の Secret $k が未登録"; exit 1; }
+            echo "$k=$v" >> "$GITHUB_ENV"
+          done
+          [ -n "$HANGER_TOKEN" ] || { echo "::error::runway の Secret MATCH_GIT_TOKEN（hanger 用トークン）が未登録"; exit 1; }
+
+      - name: Clone hanger
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HANGER_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$auth"
+          git -c http.extraheader="$auth" clone --quiet "https://github.com/$RW_HANGER_REPO.git" "$RUNNER_TEMP/hanger" \
+            || { echo "::error::$RW_HANGER_REPO を読めない（MATCH_GIT_TOKEN の対象リポ・権限を確認）"; exit 1; }
+          git -C "$RUNNER_TEMP/hanger" config http.extraheader "$auth"
+
+      - name: Status
+        shell: bash
+        run: |
+          set -euo pipefail
+          asc write-key > /dev/null
+          echo "== hanger/signing =="
+          if [ -f "$RUNNER_TEMP/hanger/signing/ios.key.enc" ]; then
+            for f in development distribution; do
+              openssl x509 -inform DER -in "$RUNNER_TEMP/hanger/signing/$f.cer" -noout -subject -enddate
+            done
+          else
+            echo "（まだ無い）"
+          fi
+          echo "== Apple 側の証明書 =="
+          asc certs-list
+
+      - name: Import from crosspoint
+        if: inputs.action == 'import-crosspoint'
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${RW_IMPORT_FROM%%:*}"; sub="${RW_IMPORT_FROM#*:}"
+          git clone --quiet --depth 1 "https://github.com/$repo.git" "$RUNNER_TEMP/src" \
+            || { echo "::error::$repo を取得できない（private なら import 不可。create を使う）"; exit 1; }
+          src="$RUNNER_TEMP/src/$sub"
+          for f in ios.key.enc development.cer distribution.cer; do
+            [ -f "$src/$f" ] || { echo "::error::$repo:$sub/$f が無い"; exit 1; }
+          done
+          asc decrypt-key "$src/ios.key.enc" "$RUNNER_TEMP/ios.key"
+          keymod=$(openssl pkey -in "$RUNNER_TEMP/ios.key" -pubout | openssl sha256)
+          for f in development distribution; do
+            certmod=$(openssl x509 -inform DER -in "$src/$f.cer" -pubkey -noout | openssl sha256)
+            [ "$keymod" = "$certmod" ] || { echo "::error::$f.cer が秘密鍵と対応していない"; exit 1; }
+            openssl x509 -inform DER -in "$src/$f.cer" -noout -checkend 2592000 \
+              || echo "::warning::$f.cer の期限が 30 日以内か切れている。create で作り直す"
+          done
+          mkdir -p "$RUNNER_TEMP/hanger/signing"
+          cp "$src/development.cer" "$src/distribution.cer" "$RUNNER_TEMP/hanger/signing/"
+          asc encrypt-key "$RUNNER_TEMP/ios.key" "$RUNNER_TEMP/hanger/signing/ios.key.enc"
+          rm -f "$RUNNER_TEMP/ios.key"
+          echo "RW_COMMIT_MSG=signing: $repo の既存証明書を取り込み" >> "$GITHUB_ENV"
+
+      - name: Revoke API-created certificates
+        if: inputs.action == 'revoke-and-create'
+        shell: bash
+        run: asc revoke-all
+
+      - name: Create key and certificates
+        if: inputs.action == 'create' || inputs.action == 'revoke-and-create'
+        shell: bash
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/new"; mkdir -p "$d" "$RUNNER_TEMP/hanger/signing"
+          openssl genrsa -out "$d/ios.key" 2048
+          openssl req -new -key "$d/ios.key" -subj "/CN=runway CI/O=GitHub Actions" -out "$d/ios.csr"
+          asc cert-create DEVELOPMENT "$d/ios.csr" "$RUNNER_TEMP/hanger/signing/development.cer"
+          asc cert-create DISTRIBUTION "$d/ios.csr" "$RUNNER_TEMP/hanger/signing/distribution.cer"
+          asc encrypt-key "$d/ios.key" "$RUNNER_TEMP/hanger/signing/ios.key.enc"
+          rm -rf "$d"
+          echo "RW_COMMIT_MSG=signing: 新しい鍵と証明書を発行" >> "$GITHUB_ENV"
+
+      - name: Commit to hanger
+        if: inputs.action != 'status'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/hanger"
+          cat > signing/README.md <<'EOF'
+          # signing
+
+          runway の apple-signing が管理する、全アプリ共通の署名用証明書。手で編集しない。
+
+          - `ios.key.enc` — 秘密鍵（AES-256-CBC / PBKDF2。パスフレーズは runway の Secret から導出。平文はどこにも無い）
+          - `development.cer` / `distribution.cer` — Apple Development / Apple Distribution 証明書（DER）
+
+          期限切れ（1 年）や漏えい時は runway の Actions → apple-signing を `create` で実行。
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git rev-parse -q --verify HEAD > /dev/null; then
+            branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo main)
+          else
+            branch=main   # 空のリポ
+          fi
+          git add signing
+          if git rev-parse -q --verify HEAD > /dev/null && git diff --cached --quiet; then echo "変更なし"; exit 0; fi
+          git commit -q -m "$RW_COMMIT_MSG"
+          git push -q origin "HEAD:$branch"
+          echo "hanger に保存した（$branch）"
+          for f in development distribution; do openssl x509 -inform DER -in "signing/$f.cer" -noout -subject -enddate; done
+
+      - name: Clean up
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/keys" "$RUNNER_TEMP/ios.key" "$RUNNER_TEMP/new" "$RUNNER_TEMP/hanger"

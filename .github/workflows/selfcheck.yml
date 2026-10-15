@@ -1,0 +1,21 @@
+# runway 自身の整合性チェック（push 時、Linux ランナー）
+name: selfcheck
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: asc.py の埋め込みが最新か
+        run: python3 scripts/embed.py --check
+      - name: Python 構文
+        run: python3 -m py_compile scripts/asc.py scripts/embed.py
