@@ -1,0 +1,71 @@
+# runway 側から、public なプラグイン/アプリのリポをビルド → Developer ID 署名 → 公証 → .dmg にする。
+# 対象リポに Secrets を置かなくても使える（証明書と API キーは runway の Secrets を使う）。
+# ただし runway は private なので macOS ランナーの無料枠を消費する（Linux の 10 倍）。
+# 対象リポに Secrets を配れたら（SYNC_TOKEN 登録後）、そのリポの release-mac から実行するほうが無料。
+name: mac-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "対象リポ（owner/repo）"
+        type: string
+        default: kajisho5/model_600
+      ref:
+        description: "ブランチ・タグ（空なら既定ブランチ）"
+        type: string
+        default: ""
+      name:
+        description: "配布物の名前（空ならリポ名）"
+        type: string
+        default: ""
+      version:
+        description: "配布物のバージョン表記（空なら短いコミット ID）"
+        type: string
+        default: ""
+      build:
+        description: "ビルドコマンド（既定は JUCE + CMake、Universal）"
+        type: string
+        default: cmake -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 && cmake --build build --config Release --parallel
+      products:
+        description: "署名する成果物（glob、カンマ区切り可）"
+        type: string
+        default: build/**/Release/VST3/*.vst3, build/**/Release/AU/*.component
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.p.outputs.name }}
+      products: ${{ steps.p.outputs.products }}
+    steps:
+      - id: p
+        shell: bash
+        env:
+          REPO: ${{ inputs.repo }}
+          NAME: ${{ inputs.name }}
+          PRODUCTS: ${{ inputs.products }}
+        run: |
+          set -euo pipefail
+          name="${NAME:-${REPO#*/}}"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          {
+            echo "products<<EOF_PRODUCTS"
+            printf '%s\n' "$PRODUCTS" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$'
+            echo "EOF_PRODUCTS"
+          } >> "$GITHUB_OUTPUT"
+
+  notarize:
+    needs: prepare
+    uses: ./.github/workflows/mac-notarize.yml
+    with:
+      source_repo: ${{ inputs.repo }}
+      source_ref: ${{ inputs.ref }}
+      name: ${{ needs.prepare.outputs.name }}
+      version: ${{ inputs.version }}
+      build: ${{ inputs.build }}
+      products: ${{ needs.prepare.outputs.products }}
+    secrets: inherit

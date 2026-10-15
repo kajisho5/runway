@@ -39,6 +39,14 @@ on:
       working_directory:
         type: string
         default: .
+      source_repo:
+        description: "ビルドするリポ（owner/repo）。空なら呼び出し元リポ。runway から public なリポを署名する場合に使う"
+        type: string
+        default: ""
+      source_ref:
+        description: "source_repo のブランチ・タグ（空なら既定ブランチ）"
+        type: string
+        default: ""
       xcode:
         type: string
         default: "26"
@@ -104,6 +112,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          repository: ${{ inputs.source_repo || github.repository }}
+          ref: ${{ inputs.source_ref }}
           submodules: recursive
 
       - name: Install runway tools
