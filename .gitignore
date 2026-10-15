@@ -4,3 +4,4 @@ secrets.env
 *.mobileprovision
 *.cer
 .DS_Store
+__pycache__/
