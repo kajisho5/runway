@@ -7,6 +7,8 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $Keys = @("ASC_KEY_ID", "ASC_ISSUER_ID", "ASC_KEY_P8_BASE64", "APPLE_TEAM_ID", "MATCH_GIT_TOKEN")
+# 任意（secrets.env にあれば配る）：TestFlight 外部テストの連絡先
+$Optional = @("BETA_CONTACT_EMAIL", "BETA_CONTACT_FIRST", "BETA_CONTACT_LAST", "BETA_CONTACT_PHONE")
 
 function Fail($msg) { Write-Error "エラー: $msg"; exit 1 }
 
@@ -48,7 +50,8 @@ if ($repos.Count -eq 0) { Fail "$ReposFile に対象リポが無い" }
 
 foreach ($repo in $repos) {
   Write-Host "== $repo"
-  foreach ($k in $Keys) {
+  foreach ($k in ($Keys + $Optional)) {
+    if (-not $values[$k]) { continue }
     gh secret set $k --repo $repo --body $values[$k]
     if ($LASTEXITCODE -ne 0) { Fail "$repo の $k 設定に失敗" }
   }

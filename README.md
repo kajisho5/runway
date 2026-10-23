@@ -43,6 +43,7 @@ runway に登録して、sync-secrets で各アプリのリポへ配る。
 | `MATCH_GIT_TOKEN` | hanger を読み書きできる Fine-grained PAT（Contents: Read and write）。名前は旧方式の名残 |
 | `SYNC_TOKEN` | runway にだけ置く。配布用の Fine-grained PAT（All repositories / Secrets: Read and write） |
 | `SIGNING_KEY_PASSWORD` | 任意。署名用秘密鍵のパスフレーズ。無ければ `.p8` から自動で導く |
+| `BETA_CONTACT_EMAIL` / `BETA_CONTACT_FIRST` / `BETA_CONTACT_LAST` / `BETA_CONTACT_PHONE` | 任意。TestFlight 外部テスト（Beta App Review）の連絡先（メール・名・姓（ローマ字）・電話 +81…）。入れておくと各アプリにも配られ、外部テストの審査に自動で出せる |
 
 API キーはアクセス権 **Admin**。自動署名がプロファイルを発行するのに必要。
 

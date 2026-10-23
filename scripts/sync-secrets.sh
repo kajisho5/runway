@@ -7,6 +7,8 @@ set -euo pipefail
 ENV_FILE="${1:-secrets.env}"
 REPOS_FILE="${2:-repos.txt}"
 KEYS=(ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8_BASE64 APPLE_TEAM_ID MATCH_GIT_TOKEN)
+# 任意（secrets.env にあれば配る）：TestFlight 外部テストの連絡先
+OPTIONAL=(BETA_CONTACT_EMAIL BETA_CONTACT_FIRST BETA_CONTACT_LAST BETA_CONTACT_PHONE)
 
 die() { echo "エラー: $*" >&2; exit 1; }
 
@@ -48,8 +50,9 @@ done < "$REPOS_FILE"
 
 for repo in "${repos[@]}"; do
   echo "== $repo"
-  for k in "${KEYS[@]}"; do
+  for k in "${KEYS[@]}" "${OPTIONAL[@]}"; do
     name="SV_$k"
+    [ -n "${!name:-}" ] || continue
     printf '%s' "${!name}" | gh secret set "$k" --repo "$repo"
   done
 done
