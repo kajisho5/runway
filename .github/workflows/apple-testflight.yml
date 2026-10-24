@@ -631,7 +631,9 @@ jobs:
           security unlock-keychain -p "$kcpass" "$kc"
           for f in development distribution; do
             openssl x509 -inform DER -in "$src/$f.cer" -out "$dir/$f.pem"
-            openssl pkcs12 -export -inkey "$dir/ios.key" -in "$dir/$f.pem" -name "$f" -out "$dir/$f.p12" -passout "pass:$kcpass"
+            # macOS の security import は OpenSSL 3 既定の .p12（AES-256 + SHA-256 MAC）を読めず
+            # "MAC verification failed" になるので、互換形式（3DES + SHA-1 MAC）で書き出す
+            openssl pkcs12 -export -inkey "$dir/ios.key" -in "$dir/$f.pem" -name "$f" -out "$dir/$f.p12" -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 -passout "pass:$kcpass"
             security import "$dir/$f.p12" -k "$kc" -P "$kcpass" -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productbuild
           done
           curl -fsSL -o "$dir/AppleWWDRCAG3.cer" https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer
