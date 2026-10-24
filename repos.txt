@@ -8,3 +8,4 @@ kajisho5/conductor
 kajisho5/fresnel
 kajisho5/paddock
 kajisho5/claude-continuity
+kajisho5/iOS_QR_reader
