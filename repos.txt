@@ -11,3 +11,4 @@ kajisho5/claude-continuity
 kajisho5/iOS_QR_reader
 kajisho5/iOS_atena
 kajisho5/zippeek
+kajisho5/vaultsweep
