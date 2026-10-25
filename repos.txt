@@ -10,3 +10,4 @@ kajisho5/paddock
 kajisho5/claude-continuity
 kajisho5/iOS_QR_reader
 kajisho5/iOS_atena
+kajisho5/zippeek
