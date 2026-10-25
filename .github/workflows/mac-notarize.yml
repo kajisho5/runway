@@ -630,6 +630,19 @@ jobs:
           sign_keep() {
             codesign --force --timestamp --options runtime --preserve-metadata=entitlements --sign "$RW_IDENTITY" "$1"
           }
+          # 本体以外の実行ファイル（Contents/MacOS・Contents/Helpers に置いたコマンドなど）を署名する
+          sign_helpers() {
+            local b="$1" m="$2" d exe
+            for d in "$b/Contents/MacOS" "$b/Contents/Helpers"; do
+              [ -d "$d" ] || continue
+              while IFS= read -r -d '' exe; do
+                [ "$(basename "$exe")" = "$m" ] && [ "$d" = "$b/Contents/MacOS" ] && continue
+                file -b "$exe" | grep -q 'Mach-O' || continue
+                echo "   実行ファイル: ${exe#"$p"/}"
+                sign_keep "$exe"
+              done < <(find "$d" -maxdepth 1 -type f -perm -u+x -print0)
+            done
+          }
           count=0
           while IFS= read -r p; do
             [ -n "$p" ] || continue
@@ -638,19 +651,15 @@ jobs:
             if [ -d "$p/Contents" ]; then
               main=""
               [ -f "$p/Contents/Info.plist" ] && main=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$p/Contents/Info.plist" 2>/dev/null || true)
-              # 本体以外の実行ファイル（Contents/MacOS・Contents/Helpers に置いたコマンドなど）
-              for d in "$p/Contents/MacOS" "$p/Contents/Helpers"; do
-                [ -d "$d" ] || continue
-                while IFS= read -r -d '' exe; do
-                  [ "$(basename "$exe")" = "$main" ] && [ "$d" = "$p/Contents/MacOS" ] && continue
-                  file -b "$exe" | grep -q 'Mach-O' || continue
-                  echo "   実行ファイル: ${exe#"$p"/}"
-                  sign_keep "$exe"
-                done < <(find "$d" -maxdepth 1 -type f -perm -u+x -print0)
-              done
+              sign_helpers "$p" "$main"
               while IFS= read -r -d '' inner; do
                 case "$inner" in
-                  *.appex) echo "   拡張: ${inner#"$p"/}"; sign_keep "$inner" ;;
+                  *.appex)
+                    echo "   拡張: ${inner#"$p"/}"
+                    # 拡張の中に置いたコマンド（サンドボックスを受け継ぐ設定つき）も先に署名する
+                    imain=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$inner/Contents/Info.plist" 2>/dev/null || true)
+                    sign_helpers "$inner" "$imain"
+                    sign_keep "$inner" ;;
                   *) sign "$inner" ;;
                 esac
               done < <(
