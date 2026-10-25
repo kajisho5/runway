@@ -684,7 +684,16 @@ jobs:
           if [ "$RW_PACKAGE" = "dmg" ]; then
             if [ "$RW_APP_LINK" = "true" ]; then ln -s /Applications "$RUNNER_TEMP/stage/$RW_NAME/Applications"; fi
             hdiutil create -volname "$RW_NAME" -srcfolder "$RUNNER_TEMP/stage/$RW_NAME" -fs HFS+ -format UDZO -ov "$file"
+            # 作ったディスクイメージが正しい形か確かめる（壊れていると notarytool が受け付けない）。だめなら一度だけ作り直す
+            if ! hdiutil verify "$file"; then
+              echo "::warning::ディスクイメージの確認に失敗。作り直す"
+              sleep 5
+              hdiutil create -volname "$RW_NAME" -srcfolder "$RUNNER_TEMP/stage/$RW_NAME" -fs HFS+ -format UDZO -ov "$file"
+              hdiutil verify "$file"
+            fi
             codesign --force --timestamp --sign "$RW_IDENTITY" "$file"
+            ls -la "$file"; file "$file" || true
+            hdiutil imageinfo "$file" | head -20 || true
           else
             (cd "$RUNNER_TEMP/stage" && ditto -c -k --sequesterRsrc --keepParent "$RW_NAME" "$file")
           fi
