@@ -687,7 +687,7 @@ jobs:
             xcrun notarytool log "$sid" --key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" "$RUNNER_TEMP/notary-log.json" || true
             cat "$RUNNER_TEMP/notary-log.json" 2>/dev/null || true
           fi
-          [ "$status" = "Accepted" ] || { echo "::error::公証が通らなかった（status: $status）。上の notary log を参照"; exit 1; }
+          [ "$status" = "Accepted" ] || { echo "::error::公証が通らなかった（status: ${status}）。上の notary log を参照"; exit 1; }
           if [ "$RW_PACKAGE" = "dmg" ]; then
             # staple / validate は Apple のチケットサーバーと通信する。回線の一時的な切断で落ちるので再試行する
             retry() { local n; for n in 1 2 3 4 5; do "$@" && return 0; echo "再試行 $n/5: $*"; sleep $((n * 10)); done; return 1; }

@@ -219,7 +219,7 @@ jobs:
           if git rev-parse -q --verify HEAD > /dev/null && git diff --cached --quiet; then echo "変更なし"; exit 0; fi
           git commit -q -m "$RW_COMMIT_MSG"
           git push -q origin "HEAD:$branch"
-          echo "hanger に保存した（$branch）"
+          echo "hanger に保存した（${branch}）"
           for f in development distribution; do openssl x509 -inform DER -in "signing/$f.cer" -noout -subject -enddate; done
 
       - name: Clean up

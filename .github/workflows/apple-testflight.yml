@@ -120,7 +120,7 @@ jobs:
             ios) echo "RW_DEST=generic/platform=iOS" >> "$GITHUB_ENV" ;;
             tvos) echo "RW_DEST=generic/platform=tvOS" >> "$GITHUB_ENV" ;;
             visionos) echo "RW_DEST=generic/platform=visionOS" >> "$GITHUB_ENV" ;;
-            *) echo "::error::platform は ios / tvos / visionos（指定値: $RW_PLATFORM）。macOS は未対応"; exit 1 ;;
+            *) echo "::error::platform は ios / tvos / visionos（指定値: ${RW_PLATFORM}）。macOS は未対応"; exit 1 ;;
           esac
           if [ -z "$RW_WORKSPACE" ] && [ -z "$RW_PROJECT" ]; then
             echo "::error::workspace か project のどちらかを指定する"; exit 1
@@ -588,7 +588,7 @@ jobs:
             local name="$1" sdk
             case "$name" in
               iOS) sdk=iphoneos ;; watchOS) sdk=watchos ;; tvOS) sdk=appletvos ;; visionOS) sdk=xros ;;
-              *) echo "::error::未知の SDK 名: $name（iOS / watchOS / tvOS / visionOS）"; exit 1 ;;
+              *) echo "::error::未知の SDK 名: ${name}（iOS / watchOS / tvOS / visionOS）"; exit 1 ;;
             esac
             if grep -q -- "-sdk ${sdk}[0-9]" <<<"$SDKS"; then echo "$name SDK: あり"
             else echo "$name SDK をダウンロード"; xcodebuild -downloadPlatform "$name"; fi
@@ -622,7 +622,7 @@ jobs:
             src="$GITHUB_WORKSPACE/$RW_SIGNING_SOURCE"
           fi
           if [ ! -f "$src/ios.key.enc" ]; then
-            echo "::error::署名用証明書が無い（$src）。runway の Actions → apple-signing を実行する"; exit 1
+            echo "::error::署名用証明書が無い（${src}）。runway の Actions → apple-signing を実行する"; exit 1
           fi
           asc decrypt-key "$src/ios.key.enc" "$dir/ios.key"
           kc="$RUNNER_TEMP/build.keychain-db"; kcpass="$(uuidgen)"
