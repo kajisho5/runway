@@ -382,6 +382,9 @@ def cmd_upload(ipa, bundle_id, version, build, platform):
 
 def cmd_profile_devid(bundle_id, name, cap_types, pem_path, out_path):
     """Developer ID 配布用（MAC_APP_DIRECT）のプロファイルを作って書き出す。"""
+    import re
+    # Apple の決まり：App ID の名前は英数字と空白だけ
+    name = re.sub(r"[^A-Za-z0-9 ]+", " ", name).strip()
     # 1) Bundle ID（Mac 用）。無ければ作る
     q = urllib.parse.urlencode({"filter[identifier]": bundle_id, "limit": 200})
     _, res = api("GET", f"/v1/bundleIds?{q}")
