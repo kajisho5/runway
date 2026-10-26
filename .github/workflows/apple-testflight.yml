@@ -568,7 +568,9 @@ jobs:
                           break
                       print(f"capability {t} -> HTTP {status}: {str(text)[:1500]}")
                   if not ok:
-                      die("capability を有効にできなかった（上の Apple の返事を参照）", 5)
+                      # App Store Connect API で有効にできない権限もある（FSKit など）。その場合は Web の Identifiers で有効にしてもらう
+                      print(f"::warning::capability {cap_types} は API では有効にできなかった。"
+                            "Apple Developer の Identifiers で手で有効にしてあれば、そのまま発行できる")
 
               # 3) 署名に使う Developer ID 証明書を、シリアル番号で Apple 側から探す
               r = subprocess.run(["openssl", "x509", "-in", pem_path, "-noout", "-serial"], capture_output=True, text=True, check=True)
