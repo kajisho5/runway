@@ -734,9 +734,11 @@ jobs:
                 ent="$RUNNER_TEMP/${bid}.entitlements.plist"
                 codesign -d --entitlements - --xml "$1" > "$ent" 2>/dev/null || true
                 [ -s "$ent" ] || printf '%s' '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict/></plist>' > "$ent"
-                plutil -replace com.apple.application-identifier -string "${APPLE_TEAM_ID}.${bid}" "$ent"
-                plutil -replace com.apple.developer.team-identifier -string "${APPLE_TEAM_ID}" "$ent"
-                plutil -remove com.apple.security.get-task-allow "$ent" 2>/dev/null || true
+                # plutil は「.」を区切りとみなすので、名前に「.」を含む鍵は PlistBuddy で書く
+                pb() { /usr/libexec/PlistBuddy -c "$1" "$ent" > /dev/null 2>&1 || true; }
+                pb "Delete :com.apple.application-identifier"; pb "Add :com.apple.application-identifier string ${APPLE_TEAM_ID}.${bid}"
+                pb "Delete :com.apple.developer.team-identifier"; pb "Add :com.apple.developer.team-identifier string ${APPLE_TEAM_ID}"
+                pb "Delete :com.apple.security.get-task-allow"
                 echo "   署名に使う entitlements:"; plutil -p "$ent" | sed 's/^/     /'
                 # 拡張が使う Apple の特別な権限が、プロファイルで許されているか（無ければ Apple Developer の Identifiers で有効にする）
                 for key in $(plutil -convert json -o - "$ent" | python3 -c 'import json,sys;print(" ".join(k for k in json.load(sys.stdin) if k.startswith("com.apple.developer.") and k != "com.apple.developer.team-identifier"))'); do
