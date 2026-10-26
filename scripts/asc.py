@@ -400,7 +400,7 @@ def cmd_profile_devid(bundle_id, name, cap_types, pem_path, out_path):
         print(f"Bundle ID {bundle_id} を作った")
 
     # 2) capability（候補を順に試す。名前が分からないものは Apple の返事を表示する）
-    _, res = api("GET", f"/v1/bundleIds/{bid}/bundleIdCapabilities?limit=200")
+    _, res = api("GET", f"/v1/bundleIds/{bid}/bundleIdCapabilities")
     have = {c["attributes"].get("capabilityType") for c in res.get("data", [])}
     print("有効な capability:", ", ".join(sorted(x for x in have if x)) or "なし")
     wanted = [t.strip() for t in cap_types.split(",") if t.strip()]
