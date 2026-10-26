@@ -36,6 +36,13 @@ on:
         description: "配布物に同梱するテキスト（任意、リポ内のパス。インストール方法など）"
         type: string
         default: ""
+      profiles:
+        description: >-
+          Apple の特別な権限（com.apple.developer.*）を使う拡張のための Developer ID 用プロファイル（任意・改行区切り）。
+          1行に「拡張の名前.appex|Bundle ID|capability 種類（カンマ区切りで候補）」。例: Foo.appex|com.example.foo.fs|FSKIT_MODULE
+          runway が Bundle ID と capability を用意し、プロファイルを発行して拡張に埋め込み、そのチーム用の entitlements で署名する
+        type: string
+        default: ""
       app_link:
         description: "dmg に「アプリケーション」フォルダへのリンクを入れる（アプリをドラッグで入れる形の dmg 用）"
         type: boolean
@@ -92,6 +99,7 @@ jobs:
       RW_ENTITLEMENTS: ${{ inputs.entitlements }}
       RW_README: ${{ inputs.readme }}
       RW_APP_LINK: ${{ inputs.app_link }}
+      RW_PROFILES: ${{ inputs.profiles }}
       RW_XCODE: ${{ inputs.xcode }}
       RW_HANGER_REPO: ${{ inputs.hanger_repo || format('{0}/hanger', github.repository_owner) }}
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
@@ -136,6 +144,8 @@ jobs:
           API のエンドポイントとフィールドは Apple の App Store Connect API（OpenAPI 仕様）に準拠：
             GET /v1/apps, GET /v1/users, GET /v1/builds,
             GET/POST/DELETE /v1/certificates,
+            GET/POST /v1/bundleIds, GET /v1/bundleIds/{id}/bundleIdCapabilities, POST /v1/bundleIdCapabilities,
+            GET/POST/DELETE /v1/profiles,
             POST /v1/buildUploads, POST/PATCH /v1/buildUploadFiles, GET /v1/buildUploads/{id}
           （アップロードと証明書の処理は kajisho5/crosspoint の .github/scripts/asc_upload.py / asc_certs.py で実績のあるもの）
 
@@ -150,6 +160,9 @@ jobs:
             asc.py decrypt-key <in.enc> <out.key>    署名用秘密鍵を復号（.p8 から導くパスフレーズ候補を順に試す）
             asc.py encrypt-key <in.key> <out.enc>    署名用秘密鍵を暗号化（標準パスフレーズ）
             asc.py upload <ipa> <bundle id> <version> <build> <platform>
+            asc.py profile-devid <bundle id> <名前> <capability 種類[,種類…]> <devid.pem> <out.provisionprofile>
+                                                     Mac の Developer ID 配布用プロファイル（MAC_APP_DIRECT）を作る。
+                                                     Bundle ID が無ければ作り、capability を有効にしてから発行する
 
           環境変数:
             ASC_KEY_ID, ASC_ISSUER_ID
@@ -507,6 +520,73 @@ jobs:
               print("::warning::30 分たっても処理中。App Store Connect の TestFlight タブを確認")
 
 
+          def cmd_profile_devid(bundle_id, name, cap_types, pem_path, out_path):
+              """Developer ID 配布用（MAC_APP_DIRECT）のプロファイルを作って書き出す。"""
+              # 1) Bundle ID（Mac 用）。無ければ作る
+              q = urllib.parse.urlencode({"filter[identifier]": bundle_id, "limit": 200})
+              _, res = api("GET", f"/v1/bundleIds?{q}")
+              found = [b for b in res.get("data", []) if b["attributes"].get("identifier") == bundle_id
+                       and b["attributes"].get("platform") in ("MAC_OS", "UNIVERSAL")]
+              if found:
+                  bid = found[0]["id"]
+                  print(f"Bundle ID {bundle_id} はある（{found[0]['attributes'].get('platform')}）")
+              else:
+                  _, res = api("POST", "/v1/bundleIds", {"data": {"type": "bundleIds", "attributes": {
+                      "identifier": bundle_id, "name": name, "platform": "MAC_OS"}}})
+                  bid = res["data"]["id"]
+                  print(f"Bundle ID {bundle_id} を作った")
+
+              # 2) capability（候補を順に試す。名前が分からないものは Apple の返事を表示する）
+              _, res = api("GET", f"/v1/bundleIds/{bid}/bundleIdCapabilities?limit=200")
+              have = {c["attributes"].get("capabilityType") for c in res.get("data", [])}
+              print("有効な capability:", ", ".join(sorted(x for x in have if x)) or "なし")
+              wanted = [t.strip() for t in cap_types.split(",") if t.strip()]
+              if wanted and not (have & set(wanted)):
+                  ok = False
+                  for t in wanted:
+                      status, text = api("POST", "/v1/bundleIdCapabilities", {"data": {
+                          "type": "bundleIdCapabilities", "attributes": {"capabilityType": t},
+                          "relationships": {"bundleId": {"data": {"type": "bundleIds", "id": bid}}}}}, tolerate=True)
+                      if isinstance(status, int) and 200 <= status < 300:
+                          print(f"capability {t} を有効にした")
+                          ok = True
+                          break
+                      print(f"capability {t} -> HTTP {status}: {str(text)[:1500]}")
+                  if not ok:
+                      die("capability を有効にできなかった（上の Apple の返事を参照）", 5)
+
+              # 3) 署名に使う Developer ID 証明書を、シリアル番号で Apple 側から探す
+              r = subprocess.run(["openssl", "x509", "-in", pem_path, "-noout", "-serial"], capture_output=True, text=True, check=True)
+              serial = r.stdout.strip().split("=", 1)[1].upper().lstrip("0")
+              cert = None
+              for c in list_certs():
+                  sn = (c["attributes"].get("serialNumber") or "").upper().lstrip("0")
+                  if sn == serial:
+                      cert = c
+                      break
+              if not cert:
+                  die(f"Developer ID 証明書（シリアル {serial}）が Apple 側に見つからない")
+              print(f"証明書: {cert['attributes'].get('certificateType')} {cert['id']}")
+
+              # 4) 同じ名前の古いプロファイルは消して作り直す（capability の変更を確実に反映するため）
+              q = urllib.parse.urlencode({"filter[name]": name, "limit": 200})
+              _, res = api("GET", f"/v1/profiles?{q}")
+              for p in res.get("data", []):
+                  if p["attributes"].get("name") == name:
+                      api("DELETE", f"/v1/profiles/{p['id']}", tolerate=True)
+                      print(f"古いプロファイル {p['id']} を消した")
+              _, res = api("POST", "/v1/profiles", {"data": {"type": "profiles",
+                  "attributes": {"name": name, "profileType": "MAC_APP_DIRECT"},
+                  "relationships": {"bundleId": {"data": {"type": "bundleIds", "id": bid}},
+                                    "certificates": {"data": [{"type": "certificates", "id": cert["id"]}]}}}})
+              content = res["data"]["attributes"].get("profileContent")
+              if not content:
+                  die("プロファイルの中身が返ってこなかった")
+              with open(out_path, "wb") as f:
+                  f.write(base64.b64decode(content))
+              print(f"プロファイルを書き出した: {out_path}")
+
+
           def main():
               if len(sys.argv) < 2:
                   print(__doc__)
@@ -517,6 +597,7 @@ jobs:
                   "certs-list": (cmd_certs_list, 0), "cert-create": (cmd_cert_create, 3), "revoke-all": (cmd_revoke_all, 0),
                   "cert-find": (cmd_cert_find, 2),
                   "decrypt-key": (cmd_decrypt_key, 2), "encrypt-key": (cmd_encrypt_key, 2), "upload": (cmd_upload, 5),
+                  "profile-devid": (cmd_profile_devid, 5),
               }
               if cmd not in table or len(args) != table[cmd][1]:
                   print(__doc__)
@@ -583,6 +664,7 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpass" "$kc" > /dev/null
           # shellcheck disable=SC2046  # 既存キーチェーンの一覧を語分割して渡す
           security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          cp "$dir/devid.pem" "$RUNNER_TEMP/devid.pem"   # プロファイル発行で証明書を特定するのに使う（公開情報のみ）
           rm -rf "$dir/devid.key" "$dir/devid.p12" "$dir/hanger"
           identity=$(security find-identity -v -p codesigning "$kc" | awk '/Developer ID Application/ {print $2; exit}')
           [ -n "$identity" ] || { echo "::error::Developer ID Application の署名 ID がキーチェーンに無い"; security find-identity -v -p codesigning "$kc"; exit 1; }
@@ -597,6 +679,8 @@ jobs:
       - name: Sign
         shell: bash
         working-directory: ${{ inputs.working_directory }}
+        env:
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
         run: |
           set -euo pipefail
           # macOS 標準の bash 3.2 でも動くように書く（globstar・空配列展開を使わない）
@@ -628,6 +712,31 @@ jobs:
           PY
           # アプリ拡張（.appex）や同梱のコマンドは、ビルド時に埋め込まれた entitlements（拡張のサンドボックスなど）を残したまま署名し直す
           sign_keep() {
+            # プロファイルが要る拡張（profiles 入力）は、プロファイルを埋め込み、チーム用の entitlements を足して署名する
+            local base line ext bid caps prof ent
+            base=$(basename "$1")
+            if [ -n "${RW_PROFILES:-}" ]; then
+              while IFS= read -r line; do
+                line=$(printf '%s' "$line" | tr -d '\r')
+                [ -n "$line" ] || continue
+                IFS='|' read -r ext bid caps <<< "$line"
+                [ "$ext" = "$base" ] || continue
+                prof="$RUNNER_TEMP/${bid}.provisionprofile"
+                asc profile-devid "$bid" "runway devid ${bid}" "$caps" "$RUNNER_TEMP/devid.pem" "$prof"
+                security cms -D -i "$prof" > "$RUNNER_TEMP/${bid}.profile.plist"
+                echo "   プロファイルの権限:"; /usr/libexec/PlistBuddy -c "Print :Entitlements" "$RUNNER_TEMP/${bid}.profile.plist" | sed 's/^/     /'
+                cp "$prof" "$1/Contents/embedded.provisionprofile"
+                ent="$RUNNER_TEMP/${bid}.entitlements.plist"
+                codesign -d --entitlements - --xml "$1" > "$ent" 2>/dev/null || true
+                [ -s "$ent" ] || printf '%s' '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict/></plist>' > "$ent"
+                plutil -replace com.apple.application-identifier -string "${APPLE_TEAM_ID}.${bid}" "$ent"
+                plutil -replace com.apple.developer.team-identifier -string "${APPLE_TEAM_ID}" "$ent"
+                plutil -remove com.apple.security.get-task-allow "$ent" 2>/dev/null || true
+                echo "   署名に使う entitlements:"; plutil -p "$ent" | sed 's/^/     /'
+                codesign --force --timestamp --options runtime --entitlements "$ent" --sign "$RW_IDENTITY" "$1"
+                return
+              done <<< "$RW_PROFILES"
+            fi
             codesign --force --timestamp --options runtime --preserve-metadata=entitlements --sign "$RW_IDENTITY" "$1"
           }
           # 本体以外の実行ファイル（Contents/MacOS・Contents/Helpers に置いたコマンドなど）を署名する

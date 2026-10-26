@@ -4,6 +4,8 @@
 API のエンドポイントとフィールドは Apple の App Store Connect API（OpenAPI 仕様）に準拠：
   GET /v1/apps, GET /v1/users, GET /v1/builds,
   GET/POST/DELETE /v1/certificates,
+  GET/POST /v1/bundleIds, GET /v1/bundleIds/{id}/bundleIdCapabilities, POST /v1/bundleIdCapabilities,
+  GET/POST/DELETE /v1/profiles,
   POST /v1/buildUploads, POST/PATCH /v1/buildUploadFiles, GET /v1/buildUploads/{id}
 （アップロードと証明書の処理は kajisho5/crosspoint の .github/scripts/asc_upload.py / asc_certs.py で実績のあるもの）
 
@@ -18,6 +20,9 @@ API のエンドポイントとフィールドは Apple の App Store Connect AP
   asc.py decrypt-key <in.enc> <out.key>    署名用秘密鍵を復号（.p8 から導くパスフレーズ候補を順に試す）
   asc.py encrypt-key <in.key> <out.enc>    署名用秘密鍵を暗号化（標準パスフレーズ）
   asc.py upload <ipa> <bundle id> <version> <build> <platform>
+  asc.py profile-devid <bundle id> <名前> <capability 種類[,種類…]> <devid.pem> <out.provisionprofile>
+                                           Mac の Developer ID 配布用プロファイル（MAC_APP_DIRECT）を作る。
+                                           Bundle ID が無ければ作り、capability を有効にしてから発行する
 
 環境変数:
   ASC_KEY_ID, ASC_ISSUER_ID
@@ -375,6 +380,73 @@ def cmd_upload(ipa, bundle_id, version, build, platform):
     print("::warning::30 分たっても処理中。App Store Connect の TestFlight タブを確認")
 
 
+def cmd_profile_devid(bundle_id, name, cap_types, pem_path, out_path):
+    """Developer ID 配布用（MAC_APP_DIRECT）のプロファイルを作って書き出す。"""
+    # 1) Bundle ID（Mac 用）。無ければ作る
+    q = urllib.parse.urlencode({"filter[identifier]": bundle_id, "limit": 200})
+    _, res = api("GET", f"/v1/bundleIds?{q}")
+    found = [b for b in res.get("data", []) if b["attributes"].get("identifier") == bundle_id
+             and b["attributes"].get("platform") in ("MAC_OS", "UNIVERSAL")]
+    if found:
+        bid = found[0]["id"]
+        print(f"Bundle ID {bundle_id} はある（{found[0]['attributes'].get('platform')}）")
+    else:
+        _, res = api("POST", "/v1/bundleIds", {"data": {"type": "bundleIds", "attributes": {
+            "identifier": bundle_id, "name": name, "platform": "MAC_OS"}}})
+        bid = res["data"]["id"]
+        print(f"Bundle ID {bundle_id} を作った")
+
+    # 2) capability（候補を順に試す。名前が分からないものは Apple の返事を表示する）
+    _, res = api("GET", f"/v1/bundleIds/{bid}/bundleIdCapabilities?limit=200")
+    have = {c["attributes"].get("capabilityType") for c in res.get("data", [])}
+    print("有効な capability:", ", ".join(sorted(x for x in have if x)) or "なし")
+    wanted = [t.strip() for t in cap_types.split(",") if t.strip()]
+    if wanted and not (have & set(wanted)):
+        ok = False
+        for t in wanted:
+            status, text = api("POST", "/v1/bundleIdCapabilities", {"data": {
+                "type": "bundleIdCapabilities", "attributes": {"capabilityType": t},
+                "relationships": {"bundleId": {"data": {"type": "bundleIds", "id": bid}}}}}, tolerate=True)
+            if isinstance(status, int) and 200 <= status < 300:
+                print(f"capability {t} を有効にした")
+                ok = True
+                break
+            print(f"capability {t} -> HTTP {status}: {str(text)[:1500]}")
+        if not ok:
+            die("capability を有効にできなかった（上の Apple の返事を参照）", 5)
+
+    # 3) 署名に使う Developer ID 証明書を、シリアル番号で Apple 側から探す
+    r = subprocess.run(["openssl", "x509", "-in", pem_path, "-noout", "-serial"], capture_output=True, text=True, check=True)
+    serial = r.stdout.strip().split("=", 1)[1].upper().lstrip("0")
+    cert = None
+    for c in list_certs():
+        sn = (c["attributes"].get("serialNumber") or "").upper().lstrip("0")
+        if sn == serial:
+            cert = c
+            break
+    if not cert:
+        die(f"Developer ID 証明書（シリアル {serial}）が Apple 側に見つからない")
+    print(f"証明書: {cert['attributes'].get('certificateType')} {cert['id']}")
+
+    # 4) 同じ名前の古いプロファイルは消して作り直す（capability の変更を確実に反映するため）
+    q = urllib.parse.urlencode({"filter[name]": name, "limit": 200})
+    _, res = api("GET", f"/v1/profiles?{q}")
+    for p in res.get("data", []):
+        if p["attributes"].get("name") == name:
+            api("DELETE", f"/v1/profiles/{p['id']}", tolerate=True)
+            print(f"古いプロファイル {p['id']} を消した")
+    _, res = api("POST", "/v1/profiles", {"data": {"type": "profiles",
+        "attributes": {"name": name, "profileType": "MAC_APP_DIRECT"},
+        "relationships": {"bundleId": {"data": {"type": "bundleIds", "id": bid}},
+                          "certificates": {"data": [{"type": "certificates", "id": cert["id"]}]}}}})
+    content = res["data"]["attributes"].get("profileContent")
+    if not content:
+        die("プロファイルの中身が返ってこなかった")
+    with open(out_path, "wb") as f:
+        f.write(base64.b64decode(content))
+    print(f"プロファイルを書き出した: {out_path}")
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -385,6 +457,7 @@ def main():
         "certs-list": (cmd_certs_list, 0), "cert-create": (cmd_cert_create, 3), "revoke-all": (cmd_revoke_all, 0),
         "cert-find": (cmd_cert_find, 2),
         "decrypt-key": (cmd_decrypt_key, 2), "encrypt-key": (cmd_encrypt_key, 2), "upload": (cmd_upload, 5),
+        "profile-devid": (cmd_profile_devid, 5),
     }
     if cmd not in table or len(args) != table[cmd][1]:
         print(__doc__)
