@@ -20,7 +20,7 @@ on:
         type: string
         default: ""
       version:
-        description: "配布物のバージョン表記（空なら短いコミット ID）"
+        description: "配布物のバージョン表記（空なら対象リポの短いコミット ID。ref が v1.2.3 のようなタグなら 1.2.3）"
         type: string
         default: ""
       build:
@@ -31,6 +31,14 @@ on:
         description: "署名する成果物（glob、カンマ区切り可）"
         type: string
         default: build/**/Release/VST3/*.vst3, build/**/Release/AU/*.component
+      readme:
+        description: "dmg に同梱するテキスト（対象リポ内のパス、空なら同梱しない）"
+        type: string
+        default: ""
+      dmg_settings:
+        description: "dmg の窓のレイアウト（dmgbuild の設定ファイル、対象リポ内のパス。空なら窓の設定なし）"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -68,4 +76,6 @@ jobs:
       version: ${{ inputs.version }}
       build: ${{ inputs.build }}
       products: ${{ needs.prepare.outputs.products }}
+      readme: ${{ inputs.readme }}
+      dmg_settings: ${{ inputs.dmg_settings }}
     secrets: inherit
