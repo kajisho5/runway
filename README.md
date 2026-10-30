@@ -86,6 +86,8 @@ TestFlight ではなく、Apple の公証（notarization）を通した `.dmg` /
 - 2026/10/16 に実機ランナーで通し確認済み（ダミーの VST3 を署名 → 公証 Accepted → ステープル）
 - **アプリ（.app）も対象**：同梱の拡張（.appex。Finder のクイックルック拡張など）と、`Contents/MacOS`・`Contents/Helpers` の本体以外の実行ファイル（同梱のコマンドなど）も署名し直す。これらはビルド時に埋め込まれた entitlements（拡張のサンドボックスなど）を残したまま署名する。本体の entitlements は `entitlements` 入力で渡す
 - dmg に「アプリケーション」フォルダへのリンクを入れるときは `app_link: true`（ドラッグで入れる形の dmg になる）。実例は kajisho5/zippeek の `.github/workflows/release.yml`
+- dmg の窓のレイアウト（背景画像・アイコンの位置・ボリュームアイコン）は `dmg_settings: <dmgbuild の設定ファイル>` で指定する。設定ファイルには `-D stage=<集めたフォルダ>` が渡る。同じフォルダの `requirements.txt` で dmgbuild を入れる。実例は kajisho5/model_600 の `packaging/macos/dmg/settings.py`。mac-release にも `readme` と `dmg_settings` の入力がある
+- mac-release で `version` が空のときは、対象リポの短いコミット ID が使われる（`ref` が `v1.2.3` のようなタグなら `1.2.3`）
 - AAX（Pro Tools）は PACE の署名が別途必要なので対象外
 - Windows 版（VST3）の署名は別の仕組みが必要（未対応）
 

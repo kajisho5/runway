@@ -47,6 +47,13 @@ on:
         description: "dmg に「アプリケーション」フォルダへのリンクを入れる（アプリをドラッグで入れる形の dmg 用）"
         type: boolean
         default: false
+      dmg_settings:
+        description: >-
+          dmg の窓のレイアウト（背景・アイコン位置・ボリュームアイコン）を決める dmgbuild の設定ファイル（任意、リポ内のパス）。
+          指定すると hdiutil の代わりに dmgbuild で作る。設定には -D stage=<集めたフォルダ> が渡る。
+          同じフォルダに requirements.txt があればそれで dmgbuild を入れる（無ければ dmgbuild[badge_icons]==1.6.7）
+        type: string
+        default: ""
       working_directory:
         type: string
         default: .
@@ -99,6 +106,7 @@ jobs:
       RW_ENTITLEMENTS: ${{ inputs.entitlements }}
       RW_README: ${{ inputs.readme }}
       RW_APP_LINK: ${{ inputs.app_link }}
+      RW_DMG_SETTINGS: ${{ inputs.dmg_settings }}
       RW_PROFILES: ${{ inputs.profiles }}
       RW_XCODE: ${{ inputs.xcode }}
       RW_HANGER_REPO: ${{ inputs.hanger_repo || format('{0}/hanger', github.repository_owner) }}
@@ -110,6 +118,7 @@ jobs:
         shell: bash
         run: |
           case "$RW_PACKAGE" in dmg|zip) ;; *) echo "::error::package は dmg か zip"; exit 1 ;; esac
+          if [ -n "$RW_DMG_SETTINGS" ] && [ "$RW_PACKAGE" != "dmg" ]; then echo "::error::dmg_settings は package: dmg のときだけ使える"; exit 1; fi
           for k in ASC_KEY_ID ASC_ISSUER_ID APPLE_TEAM_ID; do
             v="${!k}"; v="$(printf '%s' "$v" | tr -d '[:space:]')"
             [ -n "$v" ] || { echo "::error::Secret $k が未登録"; exit 1; }
@@ -128,6 +137,22 @@ jobs:
           repository: ${{ inputs.source_repo || github.repository }}
           ref: ${{ inputs.source_ref }}
           submodules: recursive
+
+      # runway から別のリポ（source_repo）を作るとき、version が空なら runway ではなく対象リポのコミット ID を使う。
+      # source_ref が v1.2.3 のようなタグなら 1.2.3
+      - name: Version from the source repo
+        if: inputs.source_repo != '' && inputs.version == ''
+        shell: bash
+        env:
+          RW_SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          case "$RW_SOURCE_REF" in
+            v[0-9]*) v="${RW_SOURCE_REF#v}" ;;
+            *) v="$(git -C "$GITHUB_WORKSPACE" rev-parse --short=7 HEAD)" ;;
+          esac
+          echo "RW_VER=$v" >> "$GITHUB_ENV"
+          echo "配布物: ${RW_NAME}-${v}.${RW_PACKAGE}"
 
       - name: Install runway tools
         shell: bash
@@ -806,12 +831,32 @@ jobs:
           file="$out/${RW_NAME}-${RW_VER}.${RW_PACKAGE}"
           if [ "$RW_PACKAGE" = "dmg" ]; then
             if [ "$RW_APP_LINK" = "true" ]; then ln -s /Applications "$RUNNER_TEMP/stage/$RW_NAME/Applications"; fi
-            hdiutil create -volname "$RW_NAME" -srcfolder "$RUNNER_TEMP/stage/$RW_NAME" -fs HFS+ -format UDZO -ov "$file"
+            if [ -n "$RW_DMG_SETTINGS" ]; then
+              # 窓のレイアウト付き。dmgbuild は .DS_Store を直接書くので Finder の自動操作が要らない。
+              # 中身は stage から ditto でコピーされるので、署名はそのまま残る
+              settings="$GITHUB_WORKSPACE/$RW_DMG_SETTINGS"
+              [ -f "$settings" ] || { echo "::error::dmg_settings が見つからない: $RW_DMG_SETTINGS"; exit 1; }
+              python3 -m venv "$RUNNER_TEMP/dmgenv"
+              req="$(dirname "$settings")/requirements.txt"
+              if [ -f "$req" ]; then
+                "$RUNNER_TEMP/dmgenv/bin/pip" install -q -r "$req"
+              else
+                "$RUNNER_TEMP/dmgenv/bin/pip" install -q "dmgbuild[badge_icons]==1.6.7"
+              fi
+            fi
+            make_dmg() {
+              if [ -n "$RW_DMG_SETTINGS" ]; then
+                "$RUNNER_TEMP/dmgenv/bin/dmgbuild" -s "$settings" -D stage="$RUNNER_TEMP/stage/$RW_NAME" "$RW_NAME" "$file"
+              else
+                hdiutil create -volname "$RW_NAME" -srcfolder "$RUNNER_TEMP/stage/$RW_NAME" -fs HFS+ -format UDZO -ov "$file"
+              fi
+            }
+            make_dmg
             # 作ったディスクイメージが正しい形か確かめる（壊れていると notarytool が受け付けない）。だめなら一度だけ作り直す
             if ! hdiutil verify "$file"; then
               echo "::warning::ディスクイメージの確認に失敗。作り直す"
               sleep 5
-              hdiutil create -volname "$RW_NAME" -srcfolder "$RUNNER_TEMP/stage/$RW_NAME" -fs HFS+ -format UDZO -ov "$file"
+              make_dmg
               hdiutil verify "$file"
             fi
             codesign --force --timestamp --sign "$RW_IDENTITY" "$file"
