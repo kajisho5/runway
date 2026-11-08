@@ -91,6 +91,17 @@ TestFlight ではなく、Apple の公証（notarization）を通した `.dmg` /
 - AAX（Pro Tools）は PACE の署名が別途必要なので対象外
 - Windows 版（VST3）の署名は別の仕組みが必要（未対応）
 
+## Tauri アプリの自動アップデート用の署名鍵
+
+Tauri の自動アップデートは、更新ファイルを専用の鍵で署名する。鍵は runway が作って配るので、人が鍵を見たりコピーしたりしなくてよい。
+
+1. `tauri-updater.txt` にアプリのリポを 1 行足して保存する（**tauri-updater-key** が自動で走る）
+2. 秘密鍵は対象リポの Secret `TAURI_SIGNING_PRIVATE_KEY` に入る（パスワードなし）。公開鍵は runway の `updater-keys/<owner>__<repo>.pub` に保存される
+3. 公開鍵の中身をアプリに入れる（hushtv は `crates/hushtv-app/updater.pub`）
+
+- 一度作った鍵は作り直さない（作り直すと、配布済みのアプリが更新を受け取れなくなる）
+- アプリ側のビルドでは `TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}` と `TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""` を渡す。実例は kajisho5/hushtv の `.github/workflows/release.yml`
+
 ## うまくいかないとき
 
 | 症状 | 原因と対処 |

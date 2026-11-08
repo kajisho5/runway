@@ -1,0 +1,76 @@
+# Tauri アプリの自動アップデート用の署名鍵を作って、対象リポの Secrets に入れる（PC 作業不要・鍵は人の目に触れない）。
+# tauri-updater.txt にリポを 1 行足して保存すると走る。
+# - 秘密鍵：対象リポの Secret「TAURI_SIGNING_PRIVATE_KEY」（パスワードなし）
+# - 公開鍵：runway の updater-keys/<owner>__<repo>.pub に保存（アプリの tauri.conf.json の plugins.updater.pubkey に書く）
+# 既に Secret があるリポは作り直さない（作り直すと、配布済みのアプリが更新を受け取れなくなるため）。
+name: tauri-updater-key
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [tauri-updater.txt]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tauri-updater-key
+  cancel-in-progress: false
+
+jobs:
+  keys:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Make keys
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then echo "::error::runway の Secrets に SYNC_TOKEN が無い"; exit 1; fi
+          mkdir -p updater-keys
+          work="$RUNNER_TEMP/tauri-keys"; mkdir -p "$work"; chmod 700 "$work"
+          {
+            echo "### 自動アップデートの署名鍵"
+            echo ""
+            echo "| リポ | 結果 |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          failed=0
+          while IFS= read -r r || [ -n "$r" ]; do
+            r="${r%$'\r'}"; r="${r%%#*}"; r="${r//[[:space:]]/}"
+            [ -z "$r" ] && continue
+            pub="updater-keys/${r%%/*}__${r#*/}.pub"
+            echo "== $r"
+            names=$(gh secret list --repo "$r" --json name --jq '.[].name') || { echo "::error::$r の Secrets を読めない（SYNC_TOKEN の権限を確認）"; echo "| $r | 失敗（読めない） |" >> "$GITHUB_STEP_SUMMARY"; failed=1; continue; }
+            if printf '%s\n' "$names" | grep -qx TAURI_SIGNING_PRIVATE_KEY; then
+              if [ -f "$pub" ]; then
+                echo "| $r | 作成済み（そのまま） |" >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "::error::$r には秘密鍵があるのに公開鍵が無い。対象リポの Secret TAURI_SIGNING_PRIVATE_KEY を消してからもう一度実行する（配布済みのアプリは手動で入れ直しになる）"
+                echo "| $r | 失敗（公開鍵が無い） |" >> "$GITHUB_STEP_SUMMARY"; failed=1
+              fi
+              continue
+            fi
+            key="$work/${r//\//__}.key"
+            rm -f "$key" "$key.pub"
+            npx --yes @tauri-apps/cli@2 signer generate --ci -p "" -w "$key" > /dev/null
+            gh secret set TAURI_SIGNING_PRIVATE_KEY --repo "$r" < "$key"
+            cp "$key.pub" "$pub"
+            rm -f "$key"
+            echo "| $r | 作成した |" >> "$GITHUB_STEP_SUMMARY"
+          done < tauri-updater.txt
+          rm -rf "$work"
+          if [ -n "$(git status --porcelain updater-keys)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add updater-keys
+            git commit -m "自動アップデートの公開鍵を追加"
+            git push
+          fi
+          exit "$failed"

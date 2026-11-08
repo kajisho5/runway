@@ -1,0 +1,3 @@
+# 自動アップデートの署名鍵を作るリポ（owner/repo を1行ずつ）。# 以降はコメント
+# 一度作った鍵は作り直さない（tauri-updater-key.yml 参照）
+kajisho5/hushtv
