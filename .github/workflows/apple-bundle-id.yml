@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: pip install --quiet pyjwt cryptography
       - name: Bundle ID を登録
         run: python3 scripts/asc.py bundle-id "$BUNDLE_ID" "$APP_NAME" "$PLATFORM"

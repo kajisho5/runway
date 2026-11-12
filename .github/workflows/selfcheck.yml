@@ -14,8 +14,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: asc.py の埋め込みが最新か
         run: python3 scripts/embed.py --check
       - name: Python 構文
         run: python3 -m py_compile scripts/asc.py scripts/embed.py
+      - name: asc.py の使い方表示が全コマンド分あるか
+        run: |
+          for c in testers whats-new status check-ids upload next-build; do
+            grep -q "asc.py $c " scripts/asc.py || { echo "::error::docstring に $c が無い"; exit 1; }
+          done

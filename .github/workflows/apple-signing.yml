@@ -44,7 +44,7 @@ jobs:
       HANGER_TOKEN: ${{ secrets.MATCH_GIT_TOKEN }}
     steps:
       - name: Checkout runway
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up tools
         shell: bash

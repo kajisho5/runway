@@ -10,7 +10,7 @@
 
 | リポ | 役割 |
 |---|---|
-| `kajisho5/runway`（private） | 共通ワークフロー、証明書管理、Secrets 配布 |
+| `kajisho5/runway`（public） | 共通ワークフロー、証明書管理、Secrets 配布 |
 | `kajisho5/hanger`（private） | 共有の署名用証明書（`signing/`）。apple-signing が書き込むので手で触らない |
 | 各アプリのリポ | `templates/testflight.yml` をコピーして数行書き換えるだけ |
 
@@ -21,6 +21,7 @@
 .github/workflows/apple-signing.yml     共有証明書の用意・確認（runway の Actions から手動実行）
 .github/workflows/mac-notarize.yml      Mac 向けプラグイン/アプリのビルド → Developer ID 署名 → 公証 → dmg/zip
 .github/workflows/sync-secrets.yml      runway の Secrets を repos.txt の全リポへコピー
+.github/workflows/testflight-check.yml  「TestFlight に出ない」ときの点検と自動修正（runway の Actions から手動実行）
 .github/workflows/selfcheck.yml         runway 自身の整合性チェック
 scripts/asc.py                          App Store Connect API ツール（apple-testflight.yml / mac-notarize.yml に埋め込み済み）
 .github/workflows/apple-bundle-id.yml   新しいアプリの Bundle ID を API で登録（runway の Actions から手動実行）
@@ -58,6 +59,28 @@ API キーはアクセス権 **Admin**。自動署名がプロファイルを発
 
 https://github.com/settings/personal-access-tokens/new?name=runway-sync-secrets&description=runway+sync-secrets%3A+write+Actions+secrets+to+app+repos&expires_in=none&secrets=write
 
+## 送信のあとに自動でやること
+
+apple-testflight はビルドを送ったあと、続けて次のことを行う（失敗しても送信済みのビルドには影響しない）。
+
+1. **内部テストのグループを整える**：無ければ「Internal」を作り、全ビルド自動配信をオンにし、アカウント所有者・管理者をテスターに入れる。まだ招待していない人にだけ招待メールを送る（毎回は送らない）。止めるなら `testers: false`
+2. **テストの内容を書き込む**：TestFlight アプリの「テストの内容」に、最新のコミットの説明を入れる（`Co-Authored-By` などの行は除く）。自分で書くなら `whats_new: "…"`、書かないなら `whats_new: none`
+3. **状態をまとめる**：実行結果のまとめ（Summary）に、最新 5 ビルドの処理・配信の状態、テスターの状態、TestFlight 画面へのリンク、次にやることを日本語で出す
+
+各アプリに状態確認用のスクリプトやワークフローをコピーする必要はなくなった。
+
+## TestFlight に出てこないとき（testflight-check）
+
+runway の Actions → **testflight-check** → Run workflow（iPhone の GitHub アプリからも押せる）。
+
+https://github.com/kajisho5/runway/actions/workflows/testflight-check.yml
+
+- `repo` にアプリのリポ（例: `kajisho5/my-app`）だけ入れればよい。Bundle ID はそのリポの `testflight.yml` から読む
+- 見るもの：配布先（repos.txt）と Secrets、ワークフローの有無、Bundle ID の登録、App Store Connect のアプリ記録、最新ビルドの処理と配信、テスターの状態
+- 「直す」（`fix`）がオンなら、内部テストのグループ作成・自動配信オン・管理者のテスター追加まで行う
+- 結果は実行画面の Summary に、足りないものと直し方（画面の URL つき）で出る。メールアドレスや鍵は出さない
+- Linux で動くので、Mac の無料枠は使わない
+
 ## 新しいアプリを足すとき
 
 「人」と書いた作業以外は Claude が API と Actions で行える（Claude のセッションから GitHub の API で Actions を実行できる）。人に頼むのは、Apple が API を用意していない作業だけ。
@@ -69,9 +92,11 @@ https://github.com/settings/personal-access-tokens/new?name=runway-sync-secrets&
 | 3 | **アプリ記録を作る** | 人 | https://appstoreconnect.apple.com/apps → ＋ → 新規App（Bundle ID は 2 のもの）。**Apple が API での作成を許していない**（`POST /v1/apps` は「CREATE は不可」で拒否される）ので、Web の画面でしか作れない |
 | 4 | **Secrets を配る** | Claude | runway の `repos.txt` にアプリのリポを 1 行足して push（sync-secrets が自動で走る） |
 | 5 | **ワークフローを置く** | Claude | アプリのリポに `templates/testflight.yml` を `.github/workflows/testflight.yml` としてコピーし、`bundle_id` / `project`（または `workspace`）/ `scheme` を書き換える |
-| 6 | **TestFlight の内部グループを作る** | Claude | API で作れる（flight-deck スキルの `asc_internal_group.py`）。手でやるならアプリ → TestFlight → 内部テスト → ＋ → 自分を追加し、自動配信をオン |
+| 6 | **TestFlight の内部グループを作る** | 自動 | 7 の送信のあとに apple-testflight が作る（上の「送信のあとに自動でやること」）。送る前に作るなら testflight-check を実行 |
 | 7 | **実行する** | Claude | アプリのリポの Actions → testflight → Run workflow（API の workflow dispatch でも可）。所要 15〜35 分 |
-| 8 | **実機で確認する** | 人 | iPhone の TestFlight アプリから入れる |
+| 8 | **実機で確認する** | 人 | iPhone の TestFlight アプリから入れる。出てこなければ testflight-check |
+
+2〜5 が終わったかどうかは、testflight-check に `repo` を入れて実行すると一覧で分かる。
 
 実績：kajisho5/holder-link（2026-11-12）。2・4・5・7 を Claude が行い、人がやったのは 1 と 3 だけ。
 
@@ -90,7 +115,7 @@ TestFlight ではなく、Apple の公証（notarization）を通した `.dmg` /
 2. **リポに置く**：プラグインのリポに `templates/mac-plugin.yml` を `.github/workflows/release-mac.yml` としてコピーし、`build`（ビルドコマンド）と `products`（できたバンドルのパス）を合わせる
 3. **実行する**：Actions → release-mac → Run workflow、または `v1.0.0` のようなタグを push。公証済みの `.dmg` が Artifacts に出る
 
-- **対象リポに Secrets が無くても**、runway の Actions → **mac-release** に対象リポ（public）を入れて実行すれば同じ署名・公証ができる。ただし runway は private なので macOS の無料枠を使う
+- **対象リポに Secrets が無くても**、runway の Actions → **mac-release** に対象リポ（public）を入れて実行すれば同じ署名・公証ができる。runway は public なので、標準ランナーの利用は無料
 - 公証は App Store Connect API のチームキーで行う（`notarytool --key`）。今の API キーをそのまま使う
 - 2026/10/16 に実機ランナーで通し確認済み（ダミーの VST3 を署名 → 公証 Accepted → ステープル）
 - **アプリ（.app）も対象**：同梱の拡張（.appex。Finder のクイックルック拡張など）と、`Contents/MacOS`・`Contents/Helpers` の本体以外の実行ファイル（同梱のコマンドなど）も署名し直す。これらはビルド時に埋め込まれた entitlements（拡張のサンドボックスなど）を残したまま署名する。本体の entitlements は `entitlements` 入力で渡す
@@ -116,6 +141,7 @@ Tauri の自動アップデートは、更新ファイルを専用の鍵で署�
 | 症状 | 原因と対処 |
 |---|---|
 | `Secret … が未登録` | sync-secrets が未実行か、`repos.txt` にリポが無い |
+| TestFlight アプリに出てこない | runway の Actions → testflight-check を実行して、Summary の「次にやること」に従う |
 | `App Store Connect に Bundle ID … のアプリが無い` | 「新しいアプリを足すとき」の 2 が未実施か、Bundle ID の不一致 |
 | `GET /v1/users -> HTTP 403` の警告 | API キーが Admin ではない |
 | `署名用証明書が無い` | apple-signing が未実行 |
@@ -132,7 +158,7 @@ Tauri の自動アップデートは、更新ファイルを専用の鍵で署�
 
 ## 確認済み / 未確認
 
-- **確認済み**：ワークフロー構文（actionlint + shellcheck）。`asc.py` の各コマンドを模擬 API サーバーで確認（アプリ検索、ビルド番号、証明書の作成と失効、分割アップロードと MD5、処理待ち）。crosspoint 方式で暗号化された秘密鍵の復号（改行や CRLF の違いを含む 12 通り）
+- **確認済み**：ワークフロー構文（actionlint + shellcheck）。testers / whats-new / status / check-ids を模擬 API サーバーで確認（2026-11-12）。`asc.py` の各コマンドを模擬 API サーバーで確認（アプリ検索、ビルド番号、証明書の作成と失効、分割アップロードと MD5、処理待ち）。crosspoint 方式で暗号化された秘密鍵の復号（改行や CRLF の違いを含む 12 通り）
 - **未確認**：本物の Mac ランナーでの通し実行。tvOS / visionOS / Watch 同梱の実アプリでの動作。中核の処理（自動署名、Build Uploads）は crosspoint で TestFlight 到達済み
 
 ## 更新ルール
