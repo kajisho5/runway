@@ -1,0 +1,36 @@
+# 新しいアプリの Bundle ID を App Store Connect API で登録する（runway の Actions から手動実行）。
+# Claude からも API で実行できる。アプリ記録（App Store Connect の「新規App」）は Apple が API での作成を許していないので、人が作る。
+name: apple-bundle-id
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: "Bundle ID（例: com.seventhwell.MyApp）"
+        required: true
+      name:
+        description: "Apple 側に出る名前（英数字と空白だけ）"
+        required: true
+      platform:
+        description: "ios | macos | universal"
+        default: ios
+
+permissions:
+  contents: read
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install --quiet pyjwt cryptography
+      - name: Bundle ID を登録
+        run: python3 scripts/asc.py bundle-id "$BUNDLE_ID" "$APP_NAME" "$PLATFORM"
+        env:
+          BUNDLE_ID: ${{ inputs.bundle_id }}
+          APP_NAME: ${{ inputs.name }}
+          PLATFORM: ${{ inputs.platform }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}

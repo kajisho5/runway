@@ -23,6 +23,7 @@
 .github/workflows/sync-secrets.yml      runway の Secrets を repos.txt の全リポへコピー
 .github/workflows/selfcheck.yml         runway 自身の整合性チェック
 scripts/asc.py                          App Store Connect API ツール（apple-testflight.yml / mac-notarize.yml に埋め込み済み）
+.github/workflows/apple-bundle-id.yml   新しいアプリの Bundle ID を API で登録（runway の Actions から手動実行）
 scripts/embed.py                        asc.py を編集したら実行して埋め込みを更新する
 scripts/sync-secrets.sh / .ps1          sync-secrets を PC から行う場合（gh CLI が必要）
 repos.txt                               Secrets の配布先
@@ -59,12 +60,20 @@ https://github.com/settings/personal-access-tokens/new?name=runway-sync-secrets&
 
 ## 新しいアプリを足すとき
 
-1. **Bundle ID を登録する**：developer.apple.com → Certificates, Identifiers & Profiles → Identifiers → ＋ → App IDs → App → Explicit。Watch や Widget を同梱するならその分も登録する
-2. **アプリ記録を作る**：App Store Connect → アプリ → ＋ → 新規 App（Bundle ID は 1 のもの）
-3. **TestFlight の内部グループを作る**：アプリ → TestFlight → 内部テスト → ＋ → 自分を追加し、自動配信をオン
-4. **Secrets を配る**：runway の `repos.txt` にアプリのリポを 1 行足す（GitHub の画面で編集して保存すれば、sync-secrets が自動で走る）
-5. **ワークフローを置く**：アプリのリポに `templates/testflight.yml` を `.github/workflows/testflight.yml` としてコピーし、`bundle_id` / `project`（または `workspace`）/ `scheme` を書き換える
-6. **実行する**：アプリのリポの Actions → testflight → Run workflow。iPhone の GitHub アプリからも押せる。所要 15〜35 分
+「人」と書いた作業以外は Claude が API と Actions で行える（Claude のセッションから GitHub の API で Actions を実行できる）。人に頼むのは、Apple が API を用意していない作業だけ。
+
+| # | 作業 | 誰が | やり方 |
+|---|---|---|---|
+| 1 | **アプリのリポを作る** | 人 | https://github.com/new （Claude のセッションは新しいリポを作れない）。空のままで良い |
+| 2 | **Bundle ID を登録する** | Claude | runway の Actions → **apple-bundle-id** を Bundle ID・名前・platform を入れて実行（`asc.py bundle-id`）。Watch や Widget を同梱するならその分も実行する |
+| 3 | **アプリ記録を作る** | 人 | https://appstoreconnect.apple.com/apps → ＋ → 新規App（Bundle ID は 2 のもの）。**Apple が API での作成を許していない**（`POST /v1/apps` は「CREATE は不可」で拒否される）ので、Web の画面でしか作れない |
+| 4 | **Secrets を配る** | Claude | runway の `repos.txt` にアプリのリポを 1 行足して push（sync-secrets が自動で走る） |
+| 5 | **ワークフローを置く** | Claude | アプリのリポに `templates/testflight.yml` を `.github/workflows/testflight.yml` としてコピーし、`bundle_id` / `project`（または `workspace`）/ `scheme` を書き換える |
+| 6 | **TestFlight の内部グループを作る** | Claude | API で作れる（flight-deck スキルの `asc_internal_group.py`）。手でやるならアプリ → TestFlight → 内部テスト → ＋ → 自分を追加し、自動配信をオン |
+| 7 | **実行する** | Claude | アプリのリポの Actions → testflight → Run workflow（API の workflow dispatch でも可）。所要 15〜35 分 |
+| 8 | **実機で確認する** | 人 | iPhone の TestFlight アプリから入れる |
+
+実績：kajisho5/holder-link（2026-11-12）。2・4・5・7 を Claude が行い、人がやったのは 1 と 3 だけ。
 
 ### 呼び出し側の前提
 

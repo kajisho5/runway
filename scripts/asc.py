@@ -21,6 +21,7 @@ API のエンドポイントとフィールドは Apple の App Store Connect AP
   asc.py encrypt-key <in.key> <out.enc>    署名用秘密鍵を暗号化（標準パスフレーズ）
   asc.py upload <ipa> <bundle id> <version> <build> <platform>
   asc.py profile-devid <bundle id> <名前> <capability 種類[,種類…]> <devid.pem> <out.provisionprofile>
+  asc.py bundle-id <bundle id> <名前> <platform>   Bundle ID を登録（あれば何もしない）し、アプリ記録の有無を表示
                                            Mac の Developer ID 配布用プロファイル（MAC_APP_DIRECT）を作る。
                                            Bundle ID が無ければ作り、capability を有効にしてから発行する
 
@@ -45,7 +46,7 @@ import urllib.parse
 import urllib.request
 
 API = "https://api.appstoreconnect.apple.com"
-PLATFORMS = {"ios": "IOS", "tvos": "TV_OS", "visionos": "VISION_OS"}
+PLATFORMS = {"ios": "IOS", "tvos": "TV_OS", "visionos": "VISION_OS", "macos": "MAC_OS"}
 MANAGED_CERT_TYPES = {"DEVELOPMENT", "DISTRIBUTION", "IOS_DEVELOPMENT", "IOS_DISTRIBUTION"}
 
 
@@ -328,7 +329,8 @@ def cmd_upload(ipa, bundle_id, version, build, platform):
 
     _, res = api("POST", "/v1/buildUploadFiles", {"data": {
         "type": "buildUploadFiles",
-        "attributes": {"fileName": os.path.basename(ipa), "fileSize": size, "uti": "com.apple.ipa",
+        "attributes": {"fileName": os.path.basename(ipa), "fileSize": size,
+                       "uti": "com.apple.pkg" if ipa.endswith(".pkg") else "com.apple.ipa",
                        "assetType": "ASSET"},
         "relationships": {"buildUpload": {"data": {"type": "buildUploads", "id": upload["id"]}}},
     }})
@@ -452,6 +454,31 @@ def cmd_profile_devid(bundle_id, name, cap_types, pem_path, out_path):
     print(f"プロファイルを書き出した: {out_path}")
 
 
+def cmd_bundle_id(bundle_id, name, platform):
+    """Bundle ID を登録する（無ければ作る）。App Store Connect のアプリ記録は API では作れないので有無だけ表示する。"""
+    import re
+    name = re.sub(r"[^A-Za-z0-9 ]+", " ", name).strip() or "App"   # Apple の決まり：英数字と空白だけ
+    plat = {"ios": "IOS", "tvos": "IOS", "visionos": "IOS", "macos": "MAC_OS", "universal": "UNIVERSAL"}.get(platform.lower())
+    if not plat:
+        die(f"platform は ios / tvos / visionos / macos / universal（指定値: {platform}）")
+    q = urllib.parse.urlencode({"filter[identifier]": bundle_id, "limit": 200})
+    _, res = api("GET", f"/v1/bundleIds?{q}")
+    found = [b for b in res.get("data", []) if b["attributes"].get("identifier") == bundle_id]
+    if found:
+        print(f"Bundle ID {bundle_id} は登録済み（{found[0]['attributes'].get('platform')}）")
+    else:
+        _, res = api("POST", "/v1/bundleIds", {"data": {"type": "bundleIds", "attributes": {
+            "identifier": bundle_id, "name": name, "platform": plat}}})
+        print(f"Bundle ID {bundle_id} を登録した（{plat}）")
+    q = urllib.parse.urlencode({"filter[bundleId]": bundle_id})
+    _, res = api("GET", f"/v1/apps?{q}")
+    if res.get("data"):
+        print(f"App Store Connect のアプリ記録：あり（{res['data'][0]['attributes'].get('name')}）")
+    else:
+        print("::warning::App Store Connect のアプリ記録がまだ無い。API では作れないので、"
+              "https://appstoreconnect.apple.com/apps の ＋ → 新規App で作る")
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -462,7 +489,7 @@ def main():
         "certs-list": (cmd_certs_list, 0), "cert-create": (cmd_cert_create, 3), "revoke-all": (cmd_revoke_all, 0),
         "cert-find": (cmd_cert_find, 2),
         "decrypt-key": (cmd_decrypt_key, 2), "encrypt-key": (cmd_encrypt_key, 2), "upload": (cmd_upload, 5),
-        "profile-devid": (cmd_profile_devid, 5),
+        "profile-devid": (cmd_profile_devid, 5), "bundle-id": (cmd_bundle_id, 3),
     }
     if cmd not in table or len(args) != table[cmd][1]:
         print(__doc__)
