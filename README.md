@@ -70,7 +70,7 @@ https://github.com/settings/personal-access-tokens/new?name=runway-sync-secrets&
 
 - アプリのバージョン（`CFBundleShortVersionString`）はプロジェクト側で管理する。ビルド番号は TestFlight 上の最大値 +1 を自動で付ける
 - `ITSAppUsesNonExemptEncryption = NO` を Info.plist に入れておくと、TestFlight で輸出コンプライアンスの質問が出ない
-- 対応プラットフォームは `ios` / `tvos` / `visionos`。macOS は未対応
+- 対応プラットフォームは `ios` / `tvos` / `visionos` / `macos`。`macos` は Mac App Store 用の `.pkg` を TestFlight へ送る。署名には hanger の `mac_installer.cer`（Actions → apple-signing → `create-mac-installer` で発行）を使う。実績：kajisho5/petacal（2026-11-12）
 
 
 ## Mac 向けプラグイン・アプリ（Developer ID 署名 + 公証）
