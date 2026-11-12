@@ -20,6 +20,9 @@ jobs:
       scheme: MyApp
       # Apple Watch アプリを同梱する場合だけ:
       # extra_sdks: watchOS
+      # 送信後は自動で「内部テストのグループ作成・管理者をテスターに追加・テストの内容（最新コミットの説明）の書き込み」まで行う。
+      # テストの内容を自分で書くなら:  whats_new: "ログイン画面を直した"   書かないなら: whats_new: none
+      # テスターを触らせたくないなら:  testers: false
     secrets: inherit       # runway の sync-secrets が配った Secrets をそのまま渡す
 
   # --- 例2: Expo / React Native のアプリ（ios/ をコミット済み） ---

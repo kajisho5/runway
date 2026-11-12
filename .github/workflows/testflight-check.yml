@@ -1,0 +1,101 @@
+# 「TestFlight に出てこない」「準備ができているか分からない」ときの点検（runway の Actions から手動実行。Linux なので費用はほぼかからない）。
+# iPhone の GitHub アプリでも：runway → Actions → testflight-check → Run workflow。
+# 見るもの：配布先（repos.txt）と Secrets、Bundle ID の登録、App Store Connect のアプリ記録、最新ビルドの処理・配信、テスターの状態。
+# 「直す」をオンにすると、内部テストのグループ（全ビルド自動配信）を作り、管理者をテスターに入れる。
+name: testflight-check
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "アプリのリポ（例: kajisho5/my-app）。Bundle ID を空にすると、このリポの testflight.yml から読む"
+        default: ""
+      bundle_id:
+        description: "Bundle ID（例: com.seventhwell.MyApp）"
+        default: ""
+      platform:
+        description: "ios | tvos | visionos | macos"
+        default: ios
+      fix:
+        description: "直せるものは直す（内部テストのグループ作成・テスター追加）"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      REPO: ${{ inputs.repo }}
+      BUNDLE_ID: ${{ inputs.bundle_id }}
+      PLATFORM: ${{ inputs.platform }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+    steps:
+      - uses: actions/checkout@v6
+      - run: pip install --quiet pyjwt cryptography
+
+      - name: 配布先と Secrets
+        if: inputs.repo != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          set -uo pipefail
+          REPO="$(printf '%s' "$REPO" | tr -d '[:space:]')"
+          [[ "$REPO" == */* ]] || REPO="${GITHUB_REPOSITORY_OWNER}/${REPO}"
+          echo "REPO=$REPO" >> "$GITHUB_ENV"
+          {
+            echo "### $REPO"
+            if grep -qxF "$REPO" <(sed 's/#.*//; s/[[:space:]]//g' repos.txt); then
+              echo "- 配布先（repos.txt）：入っている"
+            else
+              echo "- **配布先（repos.txt）に入っていない。** https://github.com/${GITHUB_REPOSITORY}/edit/main/repos.txt を開き、最後に \`$REPO\` の 1 行を足して「Commit changes」"
+            fi
+            if [ -z "${GH_TOKEN:-}" ]; then
+              echo "- Secrets：SYNC_TOKEN が無いので確認できない"
+            elif names="$(gh api "repos/$REPO/actions/secrets" --jq '.secrets[].name' 2>/dev/null)"; then
+              miss=""
+              for k in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8_BASE64 APPLE_TEAM_ID MATCH_GIT_TOKEN; do
+                grep -qx "$k" <<<"$names" || miss="$miss $k"
+              done
+              if [ -z "$miss" ]; then echo "- Secrets：必要な 5 つがそろっている"
+              else echo "- **Secrets が足りない：**$miss。runway の Actions → sync-secrets → Run workflow で配り直す"; fi
+            else
+              echo "- Secrets：一覧を読めなかった（リポ名の間違い、または SYNC_TOKEN の権限）"
+            fi
+            wf="$(gh api "repos/$REPO/contents/.github/workflows/testflight.yml" --jq .content 2>/dev/null | base64 -d 2>/dev/null || true)"
+            if [ -n "$wf" ]; then
+              echo "- ワークフロー（.github/workflows/testflight.yml）：ある。実行は https://github.com/$REPO/actions/workflows/testflight.yml の「Run workflow」"
+              if [ -z "$BUNDLE_ID" ]; then
+                b="$(grep -m1 -E '^[[:space:]]*bundle_id:' <<<"$wf" | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*#.*//; s/["'"'"']//g')"
+                [ -n "$b" ] && echo "BUNDLE_ID=$b" >> "$GITHUB_ENV" && echo "- Bundle ID：testflight.yml から \`$b\` を読んだ"
+              fi
+            else
+              echo "- ワークフロー：.github/workflows/testflight.yml が見つからない（runway の templates/testflight.yml をコピーして置く）"
+            fi
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
+
+      - name: Bundle ID とアプリ記録
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$BUNDLE_ID" ]; then
+            echo "::error::Bundle ID が分からない。bundle_id を入れて実行し直す"
+            echo "**Bundle ID が分からない。** bundle_id を入れて実行し直す" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          python3 scripts/asc.py check-ids "$BUNDLE_ID"
+
+      - name: テスターを整える
+        if: inputs.fix
+        run: python3 scripts/asc.py testers "$BUNDLE_ID"
+
+      - name: TestFlight の状態
+        run: python3 scripts/asc.py status "$BUNDLE_ID" "$PLATFORM"
