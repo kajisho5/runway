@@ -14,7 +14,7 @@ on:
     inputs:
       action:
         type: choice
-        options: [status, import-crosspoint, create, revoke-and-create, create-developer-id]
+        options: [status, import-crosspoint, create, revoke-and-create, create-developer-id, create-mac-installer]
         default: status
       import_from:
         description: "import-crosspoint の取り込み元（owner/repo:dir）"
@@ -191,6 +191,27 @@ jobs:
           fi
           rm -rf "$d"
 
+      # Mac App Store に出す .pkg の署名用（Mac Installer Distribution）。鍵は ios.key を使い回す
+      - name: Create Mac installer certificate
+        if: inputs.action == 'create-mac-installer'
+        shell: bash
+        run: |
+          set -euo pipefail
+          h="$RUNNER_TEMP/hanger/signing"
+          [ -f "$h/ios.key.enc" ] || { echo "::error::hanger に ios.key.enc が無い。先に create を実行"; exit 1; }
+          if [ -f "$h/mac_installer.cer" ] && openssl x509 -inform DER -in "$h/mac_installer.cer" -noout -checkend 2592000; then
+            echo "Mac installer 証明書は既にあり、期限も 30 日以上ある"
+            openssl x509 -inform DER -in "$h/mac_installer.cer" -noout -subject -enddate
+            exit 0
+          fi
+          asc decrypt-key "$h/ios.key.enc" "$RUNNER_TEMP/ios.key"
+          openssl req -new -key "$RUNNER_TEMP/ios.key" -subj "/CN=runway CI/O=GitHub Actions" -out "$RUNNER_TEMP/mac.csr"
+          rm -f "$RUNNER_TEMP/ios.key"
+          asc cert-create MAC_INSTALLER_DISTRIBUTION "$RUNNER_TEMP/mac.csr" "$h/mac_installer.cer"
+          rm -f "$RUNNER_TEMP/mac.csr"
+          openssl x509 -inform DER -in "$h/mac_installer.cer" -noout -subject -enddate
+          echo "RW_COMMIT_MSG=signing: Mac Installer Distribution 証明書を発行" >> "$GITHUB_ENV"
+
       - name: Commit to hanger
         if: inputs.action != 'status'
         shell: bash
@@ -204,6 +225,7 @@ jobs:
 
           - `ios.key.enc` — 秘密鍵（AES-256-CBC / PBKDF2。パスフレーズは runway の Secret から導出。平文はどこにも無い）
           - `development.cer` / `distribution.cer` — Apple Development / Apple Distribution 証明書（DER）。iOS などの TestFlight 用
+          - `mac_installer.cer` — Mac Installer Distribution（Mac App Store／TestFlight に出す .pkg の署名用。鍵は ios.key.enc）
           - `devid.key.enc` / `developer_id_application.cer` — Developer ID Application（Mac 向け配布・公証用）。`devid.csr` があるのは証明書の手動発行待ち
 
           期限切れ（1 年）や漏えい時は runway の Actions → apple-signing を `create` で実行。
