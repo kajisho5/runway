@@ -5,3 +5,4 @@ secrets.env
 *.cer
 .DS_Store
 __pycache__/
+tools/*/build/

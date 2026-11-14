@@ -1,0 +1,26 @@
+# runway に同梱の小さな Mac ツール「色戻し（Untint）」を、ビルド → Developer ID 署名 → 公証 → .dmg にする。
+# ソースは tools/untint/。公証済みの dmg は実行結果の Artifacts に出る。
+name: tool-untint
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "tools/untint/**"
+      - ".github/workflows/tool-untint.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  mac:
+    uses: ./.github/workflows/mac-notarize.yml
+    with:
+      name: Untint
+      version: "1.0.0"
+      build: bash tools/untint/build.sh
+      products: tools/untint/build/Untint.app
+      readme: tools/untint/使い方.txt
+      app_link: true
+    secrets: inherit
