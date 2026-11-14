@@ -1,5 +1,5 @@
-# runway に同梱の小さな Mac ツール「色戻し（Untint）」を、ビルド → Developer ID 署名 → 公証 → .dmg にする。
-# ソースは tools/untint/。公証済みの dmg は実行結果の Artifacts に出る。
+# runway に同梱の小さな Mac ツール「色戻し（Untint）」を、ビルド → Developer ID 署名 → 公証 → .zip にする。
+# ソースは tools/untint/。公証済みの zip は実行結果の Artifacts に出る。
 name: tool-untint
 
 on:
@@ -22,5 +22,5 @@ jobs:
       build: bash tools/untint/build.sh
       products: tools/untint/build/Untint.app
       readme: tools/untint/使い方.txt
-      app_link: true
+      package: zip
     secrets: inherit

@@ -30,7 +30,7 @@ scripts/sync-secrets.sh / .ps1          sync-secrets を PC から行う場合�
 repos.txt                               Secrets の配布先
 templates/testflight.yml                iPhone 等のアプリ側に置くワークフローの雛形
 templates/mac-plugin.yml                Mac 向けプラグイン（VST3 / AU）側に置くワークフローの雛形
-tools/untint/ + .github/workflows/tool-untint.yml  小さな Mac ツール「色戻し」（外部機器接続後の画面の黄ばみを再起動なしで戻す）。main に push すると署名・公証済み dmg を作る
+tools/untint/ + .github/workflows/tool-untint.yml  小さな Mac ツール「色戻し」（外部機器接続後の画面の黄ばみを再起動なしで戻す）。main に push すると署名・公証済み zip を作る
 ```
 
 ## Secrets
