@@ -1056,8 +1056,8 @@ jobs:
                   api("POST", "/v2/appAvailabilities", {"data": {"type": "appAvailabilities",
                       "attributes": {"availableInNewTerritories": True},
                       "relationships": {"app": {"data": {"type": "apps", "id": aid}},
-                                        "territoryAvailabilities": {"data": [{"type": "territoryAvailabilities", "id": f"${{{t}}}"} for t in ids]}}},
-                      "included": [{"type": "territoryAvailabilities", "id": f"${{{t}}}", "attributes": {"available": True},
+                                        "territoryAvailabilities": {"data": [{"type": "territoryAvailabilities", "id": local_id(t)} for t in ids]}}},
+                      "included": [{"type": "territoryAvailabilities", "id": local_id(t), "attributes": {"available": True},
                                     "relationships": {"territory": {"data": {"type": "territories", "id": t}}}} for t in ids]})
                   print(f"配信地域を全 {len(ids)} 地域にした")
               else:
@@ -1072,6 +1072,11 @@ jobs:
               bid = builds["data"][0]["id"]
               api("PATCH", f"/v1/appStoreVersions/{vid}/relationships/build", {"data": {"type": "builds", "id": bid}})
               print(f"ビルド {builds['data'][0]['attributes'].get('version')} を選んだ")
+
+
+          def local_id(name):
+              """API の一括作成で使う仮の ID「${名前}」。ワークフローに埋め込むので波かっこを 2 つ続けて書かない"""
+              return "$" + "{" + name + "}"
 
 
           def upload_file(url_ops, data):

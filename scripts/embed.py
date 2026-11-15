@@ -18,6 +18,8 @@ PATTERN = re.compile(r"(?P<indent>[ ]*)# >>> asc\.py[^\n]*\n.*?(?P=indent)# <<< 
 
 def render(indent):
     body = SRC.read_text(encoding="utf-8")
+    if "${{" in body:
+        sys.exit("asc.py に「${{」がある（GitHub Actions の式と解釈されてワークフローが壊れる）")
     if "\nPY\n" in body or body.startswith("PY\n"):
         sys.exit("asc.py にヒアドキュメント終端 'PY' 行があるので埋め込めない")
     lines = [f"{indent}# >>> asc.py (scripts/asc.py から scripts/embed.py で生成。直接編集しない)"]
