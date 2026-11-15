@@ -1,3 +1,4 @@
+# Claude へ：このワークフローを使う前に、kajisho5/runway の docs/playbook.md を読むこと（App Store まで出す手順）。
 # アプリ側リポに .github/workflows/testflight.yml として置く雛形。
 # com.example.myapp / MyApp は仮の値なので、自分のアプリの値に置き換える。
 name: testflight
