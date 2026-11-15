@@ -12,7 +12,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "scripts" / "asc.py"
-WFS = [ROOT / ".github" / "workflows" / n for n in ("apple-testflight.yml", "mac-notarize.yml")]
+WFS = [ROOT / ".github" / "workflows" / n for n in ("apple-testflight.yml", "mac-notarize.yml", "apple-appstore.yml")]
 PATTERN = re.compile(r"(?P<indent>[ ]*)# >>> asc\.py[^\n]*\n.*?(?P=indent)# <<< asc\.py\n", re.S)
 
 

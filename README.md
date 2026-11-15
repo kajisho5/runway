@@ -25,6 +25,7 @@
 .github/workflows/selfcheck.yml         runway 自身の整合性チェック
 scripts/asc.py                          App Store Connect API ツール（apple-testflight.yml / mac-notarize.yml に埋め込み済み）
 .github/workflows/apple-bundle-id.yml   新しいアプリの Bundle ID を API で登録（runway の Actions から手動実行）
+.github/workflows/apple-appstore.yml     App Store 公開の準備（説明文・価格・地域・年齢区分・写真・ビルド選択）と審査への提出（アプリ側から呼ぶ）
 .github/workflows/apple-app-name.yml    アプリ記録の名前・Bundle ID の打ち間違いを直す（手動実行。Bundle ID はビルド送信前だけ）
 scripts/embed.py                        asc.py を編集したら実行して埋め込みを更新する
 scripts/sync-secrets.sh / .ps1          sync-secrets を PC から行う場合（gh CLI が必要）
@@ -108,6 +109,17 @@ https://github.com/kajisho5/runway/actions/workflows/testflight-check.yml
 - `ITSAppUsesNonExemptEncryption = NO` を Info.plist に入れておくと、TestFlight で輸出コンプライアンスの質問が出ない
 - 対応プラットフォームは `ios` / `tvos` / `visionos` / `macos`。`macos` は Mac App Store 用の `.pkg` を TestFlight へ送る。署名には hanger の `mac_installer.cer`（Actions → apple-signing → `create-mac-installer` で発行）を使う。実績：kajisho5/petacal（2026-11-12）
 
+
+## App Store で公開する（apple-appstore）
+
+アプリ側に `appstore/metadata.json`（説明文・キーワード・URL・カテゴリなど）と、画面写真の artifact（`<表示種別>/*.png`、例 `APP_IPHONE_67/1.png`）を用意して呼ぶ。例：kajisho5/genba-tokei の `.github/workflows/appstore.yml`。
+
+| 作業 | 誰が |
+|---|---|
+| 説明文・キーワード・URL・カテゴリ・年齢区分（該当なし）・価格（無料）・配信地域（全地域）・ビルド選択・写真・提出 | 自動（`asc.py store-prepare / store-screenshots / store-submit`） |
+| **App のプライバシー**（API が無い） | 人：App Store Connect → アプリ → App のプライバシー |
+| **審査用の連絡先** | 人：runway の Secrets に `BETA_CONTACT_EMAIL` / `BETA_CONTACT_FIRST` / `BETA_CONTACT_LAST`（ローマ字）/ `BETA_CONTACT_PHONE`（+81…）を登録（sync-secrets で各アプリに配られる） |
+| 承認後の公開 | 人（releaseType MANUAL。App Store Connect の「このバージョンをリリース」） |
 
 ## Mac 向けプラグイン・アプリ（Developer ID 署名 + 公証）
 

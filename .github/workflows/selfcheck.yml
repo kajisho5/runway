@@ -21,6 +21,6 @@ jobs:
         run: python3 -m py_compile scripts/asc.py scripts/embed.py
       - name: asc.py の使い方表示が全コマンド分あるか
         run: |
-          for c in testers whats-new status check-ids upload next-build app-name app-bundle-id; do
+          for c in testers whats-new status check-ids upload next-build app-name app-bundle-id store-prepare store-screenshots store-submit; do
             grep -q "asc.py $c " scripts/asc.py || { echo "::error::docstring に $c が無い"; exit 1; }
           done

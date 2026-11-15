@@ -3,7 +3,10 @@
 
 API のエンドポイントとフィールドは Apple の App Store Connect API（OpenAPI 仕様）に準拠：
   GET /v1/apps, GET /v1/users, GET /v1/builds,
-  PATCH /v1/apps/{id}, GET /v1/apps/{id}/appInfos, GET /v1/appInfos/{id}/appInfoLocalizations, PATCH /v1/appInfoLocalizations/{id},
+  PATCH /v1/apps/{id}, GET /v1/apps/{id}/appInfos, GET/POST/PATCH /v1/appStoreVersions, PATCH /v1/appStoreVersionLocalizations,
+  GET/PATCH /v1/appInfos/{id}/ageRatingDeclaration, POST/PATCH /v1/appStoreReviewDetails, GET /v1/apps/{id}/appPricePoints,
+  POST /v1/appPriceSchedules, GET /v1/territories, POST /v2/appAvailabilities, POST /v1/appScreenshotSets,
+  POST/PATCH/DELETE /v1/appScreenshots, POST /v1/reviewSubmissions, POST /v1/reviewSubmissionItems, GET /v1/appInfos/{id}/appInfoLocalizations, PATCH /v1/appInfoLocalizations/{id},
   GET/POST/PATCH /v1/betaGroups, GET /v1/betaGroups/{id}/betaTesters, POST /v1/betaTesters, POST /v1/betaTesterInvitations,
   GET /v1/builds/{id}/betaBuildLocalizations, POST/PATCH /v1/betaBuildLocalizations,
   GET/POST/DELETE /v1/certificates,
@@ -35,6 +38,13 @@ API のエンドポイントとフィールドは Apple の App Store Connect AP
   asc.py app-name <bundle id> <新しい名前>   App Store に出るアプリ名を直す（主言語のローカライズ。審査前の版だけ変えられる）
   asc.py app-bundle-id <今の bundle id> <正しい bundle id>
                                            アプリ記録の Bundle ID を付け替える（ビルドを 1 度も送っていない時だけ Apple が許す）
+  asc.py store-prepare <bundle id> <version> <metadata.json>
+                                           App Store に出す準備：説明文・キーワード・URL・カテゴリ・年齢区分（該当なし）・
+                                           価格（無料）・配信地域（全地域）・審査用メモと連絡先・最新ビルドの選択（公開は手動）
+  asc.py store-screenshots <bundle id> <version> <フォルダ>
+                                           フォルダ内の <表示種別>/*.png（例 APP_IPHONE_67/1.png）を入れ替えて登録
+  asc.py store-submit <bundle id> <version>
+                                           審査に提出（App のプライバシーは API が無いので、Web で先に済ませておく）
   asc.py status <bundle id> <platform>     最新ビルドの処理・配信の状態と、テスターの状態を日本語で表示
                                            （GITHUB_STEP_SUMMARY があれば実行結果のまとめにも書く。メールアドレスは出さない）
 
@@ -821,6 +831,235 @@ def cmd_app_bundle_id(old_bundle_id, new_bundle_id):
     print(f"アプリ記録「{apps[0]['attributes'].get('name')}」の Bundle ID を {old_bundle_id} → {new_bundle_id} にした")
 
 
+# ---------------------------------------------------------------- App Store（公開の準備と審査への提出）
+
+def store_version(aid, version, copyright_text=None, create=True):
+    """編集できる（公開前の）iOS の版を探し、無ければ作る。公開は手動（releaseType MANUAL）。"""
+    q = urllib.parse.urlencode({"filter[platform]": "IOS", "limit": 50})
+    _, body = api("GET", f"/v1/apps/{aid}/appStoreVersions?{q}")
+    editable = {"PREPARE_FOR_SUBMISSION", "DEVELOPER_REJECTED", "REJECTED", "METADATA_REJECTED", "INVALID_BINARY"}
+    for v in body.get("data", []):
+        state = v["attributes"].get("appVersionState") or v["attributes"].get("appStoreState")
+        if state in editable:
+            attrs = {"releaseType": "MANUAL"}
+            if v["attributes"].get("versionString") != version:
+                attrs["versionString"] = version
+            if copyright_text:
+                attrs["copyright"] = copyright_text
+            api("PATCH", f"/v1/appStoreVersions/{v['id']}", {"data": {"type": "appStoreVersions", "id": v["id"], "attributes": attrs}})
+            print(f"編集中の版 {version} を使う（状態 {state}）")
+            return v["id"]
+    if not create:
+        die(f"編集できる版 {version} が無い")
+    attrs = {"platform": "IOS", "versionString": version, "releaseType": "MANUAL"}
+    if copyright_text:
+        attrs["copyright"] = copyright_text
+    _, created = api("POST", "/v1/appStoreVersions", {"data": {"type": "appStoreVersions", "attributes": attrs,
+        "relationships": {"app": {"data": {"type": "apps", "id": aid}}}}})
+    print(f"版 {version} を作った")
+    return created["data"]["id"]
+
+
+def version_localization(vid, locale):
+    _, body = api("GET", f"/v1/appStoreVersions/{vid}/appStoreVersionLocalizations?limit=50")
+    for loc in body.get("data", []):
+        if loc["attributes"].get("locale") == locale:
+            return loc["id"]
+    _, created = api("POST", "/v1/appStoreVersionLocalizations", {"data": {"type": "appStoreVersionLocalizations",
+        "attributes": {"locale": locale}, "relationships": {"appStoreVersion": {"data": {"type": "appStoreVersions", "id": vid}}}}})
+    return created["data"]["id"]
+
+
+def editable_app_info(aid):
+    _, infos = api("GET", f"/v1/apps/{aid}/appInfos")
+    for i in infos.get("data", []):
+        if (i["attributes"].get("state") or i["attributes"].get("appStoreState")) not in ("READY_FOR_DISTRIBUTION", "READY_FOR_SALE"):
+            return i["id"]
+    die("編集できる App 情報が無い")
+
+
+def cmd_store_prepare(bundle_id, version, metadata_path):
+    with open(metadata_path, encoding="utf-8") as f:
+        meta = json.load(f)
+    locale = meta.get("locale", "ja")
+    aid, name = app_id(bundle_id)
+    print(f"アプリ：{name}（{bundle_id}）")
+
+    # 第三者のコンテンツを使っていない
+    api("PATCH", f"/v1/apps/{aid}", {"data": {"type": "apps", "id": aid,
+        "attributes": {"contentRightsDeclaration": "DOES_NOT_USE_THIRD_PARTY_CONTENT"}}}, tolerate=True)
+
+    # App 情報：カテゴリ・名前・サブタイトル・プライバシーポリシー
+    info_id = editable_app_info(aid)
+    rel = {}
+    if meta.get("primaryCategory"):
+        rel["primaryCategory"] = {"data": {"type": "appCategories", "id": meta["primaryCategory"]}}
+    if meta.get("secondaryCategory"):
+        rel["secondaryCategory"] = {"data": {"type": "appCategories", "id": meta["secondaryCategory"]}}
+    if rel:
+        api("PATCH", f"/v1/appInfos/{info_id}", {"data": {"type": "appInfos", "id": info_id, "relationships": rel}})
+        print("カテゴリを設定した")
+    _, locs = api("GET", f"/v1/appInfos/{info_id}/appInfoLocalizations")
+    attrs = {k: meta[k] for k in ("name", "subtitle", "privacyPolicyUrl") if meta.get(k)}
+    for loc in locs.get("data", []):
+        if loc["attributes"].get("locale") == locale:
+            api("PATCH", f"/v1/appInfoLocalizations/{loc['id']}", {"data": {"type": "appInfoLocalizations", "id": loc["id"], "attributes": attrs}})
+            print("名前・サブタイトル・プライバシーポリシーの URL を設定した")
+
+    # 年齢区分：該当なし（すべて NONE / いいえ）
+    if meta.get("ageRating", "none") == "none":
+        _, decl = api("GET", f"/v1/appInfos/{info_id}/ageRatingDeclaration")
+        did = decl["data"]["id"]
+        enums = ["alcoholTobaccoOrDrugUseOrReferences", "contests", "gamblingSimulated", "gunsOrOtherWeapons",
+                 "medicalOrTreatmentInformation", "profanityOrCrudeHumor", "sexualContentGraphicAndNudity",
+                 "sexualContentOrNudity", "horrorOrFearThemes", "matureOrSuggestiveThemes", "violenceCartoonOrFantasy",
+                 "violenceRealisticProlongedGraphicOrSadistic", "violenceRealistic"]
+        bools = ["advertising", "gambling", "healthOrWellnessTopics", "lootBox", "messagingAndChat", "parentalControls",
+                 "ageAssurance", "socialMedia", "socialMediaAgeRestricted", "unrestrictedWebAccess", "userGeneratedContent"]
+        a = {k: "NONE" for k in enums}
+        a.update({k: False for k in bools})
+        status, res = api("PATCH", f"/v1/ageRatingDeclarations/{did}", {"data": {"type": "ageRatingDeclarations", "id": did, "attributes": a}}, tolerate=True)
+        print("年齢区分を「該当なし」にした" if status < 300 else f"::warning::年齢区分を設定できなかった（HTTP {status}）: {str(res)[:500]}")
+
+    # 版：説明文など
+    vid = store_version(aid, version, meta.get("copyright"))
+    lid = version_localization(vid, locale)
+    vattrs = {k: meta[k] for k in ("description", "keywords", "supportUrl", "marketingUrl", "promotionalText") if meta.get(k)}
+    if meta.get("whatsNew"):
+        vattrs["whatsNew"] = meta["whatsNew"]
+    api("PATCH", f"/v1/appStoreVersionLocalizations/{lid}", {"data": {"type": "appStoreVersionLocalizations", "id": lid, "attributes": vattrs}})
+    print("説明文・キーワード・URL を設定した")
+
+    # 審査用のメモと連絡先（連絡先は Secrets の BETA_CONTACT_*）
+    contact = {
+        "contactEmail": os.environ.get("BETA_CONTACT_EMAIL", "").strip(),
+        "contactFirstName": os.environ.get("BETA_CONTACT_FIRST", "").strip(),
+        "contactLastName": os.environ.get("BETA_CONTACT_LAST", "").strip(),
+        "contactPhone": os.environ.get("BETA_CONTACT_PHONE", "").strip(),
+    }
+    rattrs = {"demoAccountRequired": False, "notes": meta.get("reviewNotes", "")}
+    rattrs.update({k: v for k, v in contact.items() if v})
+    missing = [k for k, v in contact.items() if not v]
+    status, rd = api("GET", f"/v1/appStoreVersions/{vid}/appStoreReviewDetail", tolerate=True)
+    if status == 200 and isinstance(rd, dict) and rd.get("data"):
+        rid = rd["data"]["id"]
+        api("PATCH", f"/v1/appStoreReviewDetails/{rid}", {"data": {"type": "appStoreReviewDetails", "id": rid, "attributes": rattrs}})
+    else:
+        api("POST", "/v1/appStoreReviewDetails", {"data": {"type": "appStoreReviewDetails", "attributes": rattrs,
+            "relationships": {"appStoreVersion": {"data": {"type": "appStoreVersions", "id": vid}}}}})
+    if missing:
+        print("::warning::審査用の連絡先が未登録（runway の Secrets：BETA_CONTACT_EMAIL / FIRST / LAST / PHONE）。提出には必要")
+    else:
+        print("審査用のメモと連絡先を設定した")
+
+    # 価格：無料（まだ決まっていない時だけ）
+    status, sched = api("GET", f"/v1/apps/{aid}/appPriceSchedule", tolerate=True)
+    if status != 200 or not (isinstance(sched, dict) and sched.get("data")):
+        q = urllib.parse.urlencode({"filter[territory]": "USA", "limit": 200})
+        _, points = api("GET", f"/v1/apps/{aid}/appPricePoints?{q}")
+        free = [pp for pp in points.get("data", []) if float(pp["attributes"].get("customerPrice") or 1) == 0]
+        if not free:
+            die("無料の価格の選択肢が見つからない")
+        api("POST", "/v1/appPriceSchedules", {"data": {"type": "appPriceSchedules", "relationships": {
+            "app": {"data": {"type": "apps", "id": aid}},
+            "baseTerritory": {"data": {"type": "territories", "id": "USA"}},
+            "manualPrices": {"data": [{"type": "appPrices", "id": "${price0}"}]}}},
+            "included": [{"type": "appPrices", "id": "${price0}", "attributes": {"startDate": None},
+                          "relationships": {"appPricePoint": {"data": {"type": "appPricePoints", "id": free[0]["id"]}}}}]})
+        print("価格を無料にした")
+    else:
+        print("価格は設定済み")
+
+    # 配信地域：全地域（まだ決まっていない時だけ）
+    status, avail = api("GET", f"/v1/apps/{aid}/appAvailabilityV2", tolerate=True)
+    if status != 200 or not (isinstance(avail, dict) and avail.get("data")):
+        _, terrs = api("GET", "/v1/territories?limit=200")
+        ids = [t["id"] for t in terrs.get("data", [])]
+        api("POST", "/v2/appAvailabilities", {"data": {"type": "appAvailabilities",
+            "attributes": {"availableInNewTerritories": True},
+            "relationships": {"app": {"data": {"type": "apps", "id": aid}},
+                              "territoryAvailabilities": {"data": [{"type": "territoryAvailabilities", "id": f"${{{t}}}"} for t in ids]}}},
+            "included": [{"type": "territoryAvailabilities", "id": f"${{{t}}}", "attributes": {"available": True},
+                          "relationships": {"territory": {"data": {"type": "territories", "id": t}}}} for t in ids]})
+        print(f"配信地域を全 {len(ids)} 地域にした")
+    else:
+        print("配信地域は設定済み")
+
+    # ビルド：この版番号の最新の処理済みビルド
+    q = urllib.parse.urlencode({"filter[app]": aid, "filter[preReleaseVersion.version]": version,
+                                "filter[processingState]": "VALID", "sort": "-uploadedDate", "limit": 1})
+    _, builds = api("GET", f"/v1/builds?{q}")
+    if not builds.get("data"):
+        die(f"版 {version} の処理済みビルドが無い（先に TestFlight へ送る）")
+    bid = builds["data"][0]["id"]
+    api("PATCH", f"/v1/appStoreVersions/{vid}/relationships/build", {"data": {"type": "builds", "id": bid}})
+    print(f"ビルド {builds['data'][0]['attributes'].get('version')} を選んだ")
+
+
+def upload_file(url_ops, data):
+    for op in url_ops:
+        chunk = data[op["offset"]:op["offset"] + op["length"]]
+        req = urllib.request.Request(op["url"], data=chunk, method=op["method"])
+        for h in op.get("requestHeaders", []):
+            req.add_header(h["name"], h["value"])
+        with urllib.request.urlopen(req, timeout=120) as res:
+            res.read()
+
+
+def cmd_store_screenshots(bundle_id, version, folder):
+    meta_locale = os.environ.get("STORE_LOCALE", "ja")
+    aid, _ = app_id(bundle_id)
+    vid = store_version(aid, version)
+    lid = version_localization(vid, meta_locale)
+    _, sets = api("GET", f"/v1/appStoreVersionLocalizations/{lid}/appScreenshotSets?limit=50")
+    existing = {s_["attributes"]["screenshotDisplayType"]: s_["id"] for s_ in sets.get("data", [])}
+    for display in sorted(os.listdir(folder)):
+        path = os.path.join(folder, display)
+        files = sorted(f for f in os.listdir(path) if f.lower().endswith(".png")) if os.path.isdir(path) else []
+        if not files:
+            continue
+        sid = existing.get(display)
+        if sid:
+            _, old = api("GET", f"/v1/appScreenshotSets/{sid}/appScreenshots?limit=50")
+            for o in old.get("data", []):
+                api("DELETE", f"/v1/appScreenshots/{o['id']}", tolerate=True)
+        else:
+            _, created = api("POST", "/v1/appScreenshotSets", {"data": {"type": "appScreenshotSets",
+                "attributes": {"screenshotDisplayType": display},
+                "relationships": {"appStoreVersionLocalization": {"data": {"type": "appStoreVersionLocalizations", "id": lid}}}}})
+            sid = created["data"]["id"]
+        for name in files[:10]:
+            with open(os.path.join(path, name), "rb") as f:
+                data = f.read()
+            _, shot = api("POST", "/v1/appScreenshots", {"data": {"type": "appScreenshots",
+                "attributes": {"fileName": name, "fileSize": len(data)},
+                "relationships": {"appScreenshotSet": {"data": {"type": "appScreenshotSets", "id": sid}}}}})
+            upload_file(shot["data"]["attributes"]["uploadOperations"], data)
+            api("PATCH", f"/v1/appScreenshots/{shot['data']['id']}", {"data": {"type": "appScreenshots", "id": shot["data"]["id"],
+                "attributes": {"uploaded": True, "sourceFileChecksum": hashlib.md5(data).hexdigest()}}})
+        print(f"{display}：{min(len(files), 10)} 枚を登録した")
+
+
+def cmd_store_submit(bundle_id, version):
+    aid, name = app_id(bundle_id)
+    vid = store_version(aid, version, create=False)
+    _, sub = api("POST", "/v1/reviewSubmissions", {"data": {"type": "reviewSubmissions", "attributes": {"platform": "IOS"},
+        "relationships": {"app": {"data": {"type": "apps", "id": aid}}}}})
+    sub_id = sub["data"]["id"]
+    status, res = api("POST", "/v1/reviewSubmissionItems", {"data": {"type": "reviewSubmissionItems",
+        "relationships": {"reviewSubmission": {"data": {"type": "reviewSubmissions", "id": sub_id}},
+                          "appStoreVersion": {"data": {"type": "appStoreVersions", "id": vid}}}}}, tolerate=True)
+    if status >= 300:
+        print(str(res)[:4000])
+        die("審査に出せなかった。足りない項目は上の内容を参照（App のプライバシーは Web で設定する：App Store Connect → アプリ → App のプライバシー）")
+    status, res = api("PATCH", f"/v1/reviewSubmissions/{sub_id}", {"data": {"type": "reviewSubmissions", "id": sub_id,
+        "attributes": {"submitted": True}}}, tolerate=True)
+    if status >= 300:
+        print(str(res)[:4000])
+        die("審査に出せなかった（上の内容を参照）")
+    print(f"{name} {version} を審査に提出した（承認後の公開は手動）")
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -834,6 +1073,8 @@ def main():
         "profile-devid": (cmd_profile_devid, 5), "bundle-id": (cmd_bundle_id, 3),
         "testers": (cmd_testers, 1), "check-ids": (cmd_check_ids, 1), "whats-new": (cmd_whats_new, 4), "status": (cmd_status, 2),
         "app-name": (cmd_app_name, 2), "app-bundle-id": (cmd_app_bundle_id, 2),
+        "store-prepare": (cmd_store_prepare, 3), "store-screenshots": (cmd_store_screenshots, 3),
+        "store-submit": (cmd_store_submit, 2),
     }
     if cmd not in table or len(args) != table[cmd][1]:
         print(__doc__)
