@@ -1031,8 +1031,13 @@ jobs:
                   print("審査用のメモと連絡先を設定した")
 
               # 価格：無料（まだ決まっていない時だけ）
+              # 価格の器はアプリ作成時からあるので、実際の価格（manualPrices）が入っているかで判断する
               status, sched = api("GET", f"/v1/apps/{aid}/appPriceSchedule", tolerate=True)
-              if status != 200 or not (isinstance(sched, dict) and sched.get("data")):
+              has_price = False
+              if status == 200 and isinstance(sched, dict) and sched.get("data"):
+                  st, prices = api("GET", f"/v1/appPriceSchedules/{sched['data']['id']}/manualPrices?limit=1", tolerate=True)
+                  has_price = st == 200 and isinstance(prices, dict) and bool(prices.get("data"))
+              if not has_price:
                   q = urllib.parse.urlencode({"filter[territory]": "USA", "limit": 200})
                   _, points = api("GET", f"/v1/apps/{aid}/appPricePoints?{q}")
                   free = [pp for pp in points.get("data", []) if float(pp["attributes"].get("customerPrice") or 1) == 0]
