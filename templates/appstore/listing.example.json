@@ -1,0 +1,186 @@
+{
+  "_about": [
+    "What scripts/asc_appstore.py puts into App Store Connect for TwinKeys Remote (the single source of truth).",
+    "Texts are copied verbatim from docs/appstore/metadata-ja.md, metadata-en.md and the App Review notes in submit-steps.md;",
+    "change them here and there together ('python3 scripts/asc_appstore.py --check' reports any difference and checks Apple's limits).",
+    "whatsNew is sent only when the app already has a version that was on the App Store (Apple: not available for the first version)."
+  ],
+  "app": {
+    "id": "6832469018",
+    "bundleId": "io.github.kajisho5.twinkeys.remote",
+    "platform": "IOS"
+  },
+  "version": {
+    "versionString": "1.3.0",
+    "build": "9",
+    "releaseType": "MANUAL",
+    "copyright": "2026 Shogo Kajiyama / SEVENTHWELL"
+  },
+  "primaryLocale": "en-US",
+  "contentRightsDeclaration": "DOES_NOT_USE_THIRD_PARTY_CONTENT",
+  "price": {
+    "baseTerritory": "JPN",
+    "customerPrice": "1000",
+    "currency": "JPY"
+  },
+  "availability": {
+    "_about": [
+      "Every App Store country or region except the 27 EU member states (decided 2026-11-12: not distributed on the App Store in the EU).",
+      "Apple: someone who distributes 'on the App Store only outside the EU' is 'not acting as a trader on the App Store';",
+      "the trader status still has to be declared once ('This is not a trader account').",
+      "https://developer.apple.com/help/app-store-connect/manage-compliance-information/manage-european-union-digital-services-act-trader-requirements",
+      "EU member states: https://european-union.europa.eu/principles-countries-history/eu-countries_en"
+    ],
+    "availableInNewTerritories": true,
+    "excludeTerritories": [
+      "AUT",
+      "BEL",
+      "BGR",
+      "HRV",
+      "CYP",
+      "CZE",
+      "DNK",
+      "EST",
+      "FIN",
+      "FRA",
+      "DEU",
+      "GRC",
+      "HUN",
+      "IRL",
+      "ITA",
+      "LVA",
+      "LTU",
+      "LUX",
+      "MLT",
+      "NLD",
+      "POL",
+      "PRT",
+      "ROU",
+      "SVK",
+      "SVN",
+      "ESP",
+      "SWE"
+    ]
+  },
+  "categories": {
+    "primary": "MUSIC",
+    "secondary": "UTILITIES"
+  },
+  "ageRating": {
+    "_about": "Answers from metadata-ja.md section 10 (expected rating 4+). Attribute names: AgeRatingDeclarationUpdateRequest.Data.Attributes.",
+    "parentalControls": false,
+    "ageAssurance": false,
+    "unrestrictedWebAccess": false,
+    "userGeneratedContent": false,
+    "socialMedia": false,
+    "messagingAndChat": false,
+    "advertising": false,
+    "profanityOrCrudeHumor": "NONE",
+    "horrorOrFearThemes": "NONE",
+    "alcoholTobaccoOrDrugUseOrReferences": "NONE",
+    "medicalOrTreatmentInformation": "NONE",
+    "healthOrWellnessTopics": false,
+    "matureOrSuggestiveThemes": "NONE",
+    "sexualContentOrNudity": "NONE",
+    "sexualContentGraphicAndNudity": "NONE",
+    "violenceCartoonOrFantasy": "NONE",
+    "violenceRealistic": "NONE",
+    "violenceRealisticProlongedGraphicOrSadistic": "NONE",
+    "gunsOrOtherWeapons": "NONE",
+    "gambling": false,
+    "gamblingSimulated": "NONE",
+    "contests": "NONE",
+    "lootBox": false,
+    "ageRatingOverrideV2": "NONE"
+  },
+  "review": {
+    "demoAccountRequired": false,
+    "notes": "TwinKeys Remote is a remote control for TwinKeys, a free, open-source Mac app for theatre and concert sound operators (source and downloads: https://github.com/kajisho5/ableton-twinkeys). It controls Ableton Live on a main Mac and a backup Mac at the same time, over the local network only.\n\nIMPORTANT: the app needs a Mac to do anything.\n- It works only with a Mac running TwinKeys 2.2 or later and Ableton Live 11 or 12, on the same local network as the iPhone or iPad.\n- WITHOUT A MAC: on the first screen, under \"NO MAC NEEDED TO TRY\", tap \"Live sample\" (scenes and clips) or \"QLab sample\" (cue list and GO). Every screen then works with fictional sample data, \"· Sample\" is shown in the top bar, and nothing is sent anywhere. The Apple Watch app shows the same sample data. In Settings > Sample you can switch to the other sample, or tap \"End the sample and connect to a Mac\" to leave.\n- One Mac is enough to try every screen. The backup Mac is optional.\n- There is no account and no sign-in.\n\nSetup (about 10 minutes):\n1. On a Mac with Ableton Live 11 or 12, download TwinKeys (notarized) from https://github.com/kajisho5/ableton-twinkeys/releases/latest, open it and allow Local Network access.\n2. In TwinKeys Settings > Live, click \"Install into Live\". Restart Live. In Live's Settings > Link, Tempo & MIDI, choose \"TwinKeysBridge\" in a free Control Surface slot. TwinKeys Settings then shows \"Live: Connected\".\n3. In TwinKeys Settings > Pairing Code, click \"Make New Code\" and note the 10-character code.\n4. In TwinKeys Settings, turn on \"Allow TwinKeys Remote to connect\".\n5. In TwinKeys Remote, type the same code and tap Save. Allow Local Network access. Tap \"Connect\" next to the Mac.\n6. The iPhone and the Mac show the same 4 digits. Click \"Allow\" on the Mac.\n\nScreens: Session (clip grid: launch clips and scenes), Mixer (volume, pan, mute, solo, sends), Cues (the Mac's cue keys), GO (launches the scene selected in Live and selects the next one), Settings (show lock and what it stops, 0 dB fader cap, privacy policy and support links).\nApple Watch app: GO, choose scene and All Notes Off. It talks only to the iPhone app (WatchConnectivity), never to the Macs.\nFull guide: https://kajisho5.github.io/ableton-twinkeys/guide/#controlling-live-from-an-iphone-or-ipad-twinkeys-remote\n\nNetwork and privacy: the app connects only to TwinKeys on the user's own Macs (Bonjour service _twinkeys-remote._tcp, then TCP). It does not connect to the internet and collects no data. The connection is encrypted with Apple CryptoKit.\n\nTwinKeys is an unofficial tool, not affiliated with or endorsed by Ableton. \"Ableton\" and \"Live\" are named only to say which software it works with."
+  },
+  "localizations": {
+    "en-US": {
+      "name": "TwinKeys Remote",
+      "subtitle": "Show cue remote for two Macs",
+      "privacyPolicyUrl": "https://kajisho5.github.io/ableton-twinkeys/privacy/",
+      "description": "TwinKeys Remote is a remote control for sound operators who run a show on two Macs: a main Mac and a backup Mac, both playing the same Ableton Live set. Every tap on your iPhone or iPad reaches Live on both Macs at the same time, so the backup is always ready to take over.\n\nTwinKeys Remote works together with TwinKeys, a free Mac app (macOS 13 or later). Install TwinKeys on both Macs first. Without it, TwinKeys Remote cannot do anything.\n\nSCREENS\n• Session: the clip grid. Tap a clip to launch it, tap an empty slot to stop that track, or launch a whole scene. Playing clips show the time left.\n• Mixer: volume, pan, mute, solo, and Send A / Send B. Drag anywhere in a column. A dashed line marks 0 dB.\n• Cues: the same cue keys as on the main Mac, each showing what it does (the memo written on the Mac), plus the last cue and whether it reached the backup.\n• GO: Live's scene list becomes your script. The big GO launches the selected scene on both Macs and moves on. Back and Next only choose; they never play.\n• Settings: show safety options and the connection.\n• Apple Watch: GO, choose scene and All Notes Off, through the iPhone.\n\nMADE FOR THE SHOW\n• Top bar: link status, delay to the backup, play, stop, tempo, position and All Notes Off.\n• Show lock: freezes tempo and the mixer. You can also lock launches, stops and cues. GO and All Notes Off are never locked.\n• Stop and Stop all clips need a long press.\n• Faders can be kept at 0 dB or below.\n• A warning appears when the backup Mac has a different set open.\n• If the main Mac stops, switch to the backup Mac from the iPhone (hold 1 second to confirm).\n• Landscape first on iPhone. On iPad the screens spread into two or three columns.\n\nSAFE CONNECTION\n• Works only on your local network. No internet connection and no account needed.\n• Your iPhone needs the same pairing code as your Macs, and you allow it once on the Mac after checking a 4-digit code.\n• All traffic is encrypted.\n\nWHAT YOU NEED\n• Two Macs with TwinKeys 2.2 or later (free)\n• Ableton Live 11 or 12 on both Macs, with the TwinKeysBridge control surface (TwinKeys installs it for you)\n• An iPhone or iPad with iOS 17 or later, on the same network as the Macs; watchOS 10 or later for the Apple Watch\n\nNo Mac yet? Tap \"Live sample\" or \"QLab sample\" on the first screen to try the screens with made-up data.\n\nPRIVACY\nTwinKeys Remote collects no data. No accounts, no analytics, no ads, no in-app purchases.\n\nTwinKeys Remote is made by Shogo Kajiyama / SEVENTHWELL. Its source code is open on GitHub (MIT License).\n\nTwinKeys is an unofficial tool. It is not made, endorsed or supported by Ableton. Ableton and Live are trademarks of Ableton AG.",
+      "keywords": "cue,show,theater,theatre,sound,playback,backup,clip,scene,mixer,stage,concert,operator,midi,tempo",
+      "promotionalText": "Fire clips, scenes and cues in Ableton Live on a main and a backup Mac at once. New: GO runs your show from Live's scene list with one big button.",
+      "supportUrl": "https://kajisho5.github.io/ableton-twinkeys/support/",
+      "marketingUrl": "https://kajisho5.github.io/ableton-twinkeys/",
+      "whatsNew": "• New look: a black screen with green lamps, easy to read on a dark stage (iPhone, iPad and Apple Watch).\n• Tempo and position in display windows like stage gear; time left as a segment meter.\n• Mixer levels as green, yellow and red LED-style meters.\n• The app now always uses the dark appearance.\nNothing changes in how you use it."
+    },
+    "ja": {
+      "name": "TwinKeys Remote",
+      "subtitle": "2台の Mac を同時に操作する本番リモコン",
+      "privacyPolicyUrl": "https://kajisho5.github.io/ableton-twinkeys/ja/privacy/",
+      "description": "TwinKeys Remote は、2台の Mac（メインとバックアップ）で同じ Ableton Live のセットを動かして本番をする、音響オペレーターのためのリモコンです。iPhone・iPad で押した操作が、2台の Live に同時に届きます。メインの Mac が止まっても、バックアップがすぐに代われます。\n\nTwinKeys Remote は、無料の Mac アプリ「TwinKeys」（macOS 13 以降）と組み合わせて使います。先に両方の Mac に TwinKeys を入れてください。TwinKeys がないと、このアプリだけでは何もできません。\n\n■ 画面\n・セッション：クリップのます目。押すとクリップを再生、空いたます目でそのトラックを停止、シーンごとの再生もできます。再生中のクリップには残り時間が出ます。\n・ミキサー：音量、パン、ミュート、ソロ、Send A・Send B。列のどこをなぞっても動きます。点線が 0 dB です。\n・キュー：メインの Mac のキューのキーと同じボタン。何をするか（Mac で書いたメモ）が大きく出ます。直前のキューと、バックアップに届いたかも分かります。\n・GO：Live のシーンの並びを台本として使います。大きな「GO」で、選んでいるシーンを2台で再生して、次へ進みます。「前へ」「次へ」は選ぶだけで、鳴らしません。\n・設定：本番の安全のための設定と、接続の状態。\n・Apple Watch：GO、シーンを選ぶ、オールノートオフ。iPhone を通して動きます。\n\n■ 本番のために\n・上の帯に、つながりの状態、バックアップまでの遅れ、再生、停止、テンポ、位置、オールノートオフ。\n・本番ロック：テンポとミキサーを動かなくします。止めるもの（クリップ・シーンの再生、停止、キュー）は選べます。GO とオールノートオフは止めません。\n・「停止」と「全クリップ停止」は長押しで動きます。\n・フェーダーを 0 dB より上げないようにできます。\n・2台で違うセットを開いていると、警告が出ます。\n・メインの Mac が止まったら、iPhone からバックアップの Mac に切り替えられます（1秒長押しで確認）。\n・iPhone は横向きが基本です。iPad では画面が2列・3列に広がります。\n\n■ 安全なつながり\n・使うのは手元のネットワークだけです。インターネットとアカウントは要りません。\n・iPhone には Mac と同じ合言葉を入れ、Mac で4桁の番号を確かめて、一度だけ許可します。\n・通信はすべて暗号化しています。\n\n■ 用意するもの\n・TwinKeys 2.2 以降を入れた Mac 2台（TwinKeys は無料）\n・両方の Mac に Ableton Live 11 か 12 と、Live 用の部品 TwinKeysBridge（TwinKeys から入れられます）\n・iOS 17 以降の iPhone・iPad（Mac と同じネットワークにつなぎます）。Apple Watch は watchOS 10 以降\n\nMac がなくても、最初の画面の「Live のサンプル」「QLab のサンプル」で、架空のデータで画面を試せます。\n\n■ プライバシー\nデータを一切集めません。アカウント、利用状況の分析、広告、アプリ内課金はありません。\n\nTwinKeys Remote は Shogo Kajiyama / SEVENTHWELL が作っています。ソースコードは GitHub で公開しています（MIT License）。\n\nTwinKeys は非公式のツールです。Ableton 社が作ったり、認めたり、サポートしたりしているものではありません。Ableton、Live は Ableton AG の商標です。",
+      "keywords": "キュー,舞台音響,効果音,バックアップ,ミキサー,シーン,リモコン,MIDI,cue",
+      "promotionalText": "iPhone から、メインとバックアップの2台の Mac の Ableton Live を同時に操作。新しい「GO」画面では、Live のシーンの並びを台本にして、大きなボタン1つで本番を進められます。",
+      "supportUrl": "https://kajisho5.github.io/ableton-twinkeys/ja/support/",
+      "marketingUrl": "https://kajisho5.github.io/ableton-twinkeys/ja/",
+      "whatsNew": "・新しい見た目：本番の暗い現場で見やすい、黒い画面に緑のランプのデザインにしました（iPhone・iPad・Apple Watch）。\n・テンポと小節の位置を機材の表示窓のように、残り時間を目盛りのメーターで表示します。\n・ミキサーの音量を、緑・黄・赤の LED のようなメーターで表示します。\n・画面はいつも暗い表示になります。\n操作の仕方は変わりません。"
+    }
+  },
+  "screenshots": {
+    "_about": [
+      "Display types: ScreenshotDisplayType (https://developer.apple.com/documentation/appstoreconnectapi/screenshotdisplaytype).",
+      "Sizes and which are required: https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications",
+      "The same iPhone and iPad pictures go to every localization; the Apple Watch pictures are per language and come from the CI artifact 'ios-screenshots'."
+    ],
+    "sets": [
+      {
+        "displayType": "APP_IPHONE_61",
+        "label": "iPhone with Dynamic Island (medium display), 6.3-inch",
+        "required": true,
+        "files": [
+          "docs/appstore/screenshots/iphone/01-session-landscape.png",
+          "docs/appstore/screenshots/iphone/02-go-landscape.png",
+          "docs/appstore/screenshots/iphone/03-mixer-landscape.png",
+          "docs/appstore/screenshots/iphone/04-cues-landscape.png",
+          "docs/appstore/screenshots/iphone/05-set-check-landscape.png",
+          "docs/appstore/screenshots/iphone/06-cues-portrait.png"
+        ]
+      },
+      {
+        "displayType": "APP_IPHONE_67",
+        "label": "iPhone with Dynamic Island (large display), 6.9-inch",
+        "required": false,
+        "files": [
+          "docs/appstore/screenshots/iphone-6.9/01-session-landscape.png",
+          "docs/appstore/screenshots/iphone-6.9/02-go-landscape.png",
+          "docs/appstore/screenshots/iphone-6.9/03-mixer-landscape.png",
+          "docs/appstore/screenshots/iphone-6.9/04-cues-landscape.png",
+          "docs/appstore/screenshots/iphone-6.9/05-set-check-landscape.png",
+          "docs/appstore/screenshots/iphone-6.9/06-cues-portrait.png"
+        ]
+      },
+      {
+        "displayType": "APP_IPAD_PRO_3GEN_129",
+        "label": "iPad 13-inch display",
+        "required": true,
+        "files": [
+          "docs/appstore/screenshots/ipad/01-overview-portrait.png",
+          "docs/appstore/screenshots/ipad/02-go-portrait.png",
+          "docs/appstore/screenshots/ipad/03-set-check-portrait.png"
+        ]
+      }
+    ],
+    "watch": {
+      "label": "Apple Watch",
+      "required": true,
+      "artifact": "ios-screenshots (CI workflow ci.yml, job 'ios')",
+      "files": {
+        "en-US": [
+          "Apple-Watch-go-en.png",
+          "Apple-Watch-scenes-en.png",
+          "Apple-Watch-panic-en.png"
+        ],
+        "ja": [
+          "Apple-Watch-go-ja.png",
+          "Apple-Watch-scenes-ja.png",
+          "Apple-Watch-panic-ja.png"
+        ]
+      }
+    }
+  }
+}
