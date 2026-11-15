@@ -768,6 +768,11 @@ def cmd_app_name(bundle_id, new_name):
     _, body = api("GET", f"/v1/apps?{q}")
     apps = [a for a in body.get("data", []) if a["attributes"].get("bundleId") == bundle_id]
     if not apps:
+        # 打ち間違いで別の Bundle ID を選んだ場合に気づけるよう、アカウントのアプリを並べる（名前と Bundle ID だけ）
+        _, everything = api("GET", "/v1/apps?" + urllib.parse.urlencode({"fields[apps]": "bundleId,name", "limit": 200}))
+        print("このアカウントのアプリ:")
+        for a in everything.get("data", []):
+            print(f"  {a['attributes'].get('name')}  ({a['attributes'].get('bundleId')})")
         die(f"App Store Connect に Bundle ID {bundle_id} のアプリが無い")
     aid = apps[0]["id"]
     primary = apps[0]["attributes"].get("primaryLocale")
