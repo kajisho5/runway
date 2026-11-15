@@ -1,0 +1,32 @@
+# App Store Connect のアプリ名を直す（アプリ記録を作る時の打ち間違い用。runway の Actions から手動実行）。
+# Claude からも API で実行できる。公開中のアプリの名前は次の版の審査でしか変えられない。
+name: apple-app-name
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: "Bundle ID（例: com.seventhwell.MyApp）"
+        required: true
+      name:
+        description: "新しいアプリ名"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  rename:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - run: pip install --quiet pyjwt cryptography
+      - name: アプリ名を直す
+        run: python3 scripts/asc.py app-name "$BUNDLE_ID" "$APP_NAME"
+        env:
+          BUNDLE_ID: ${{ inputs.bundle_id }}
+          APP_NAME: ${{ inputs.name }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}

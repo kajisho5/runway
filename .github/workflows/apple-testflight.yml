@@ -165,6 +165,7 @@ jobs:
 
           API のエンドポイントとフィールドは Apple の App Store Connect API（OpenAPI 仕様）に準拠：
             GET /v1/apps, GET /v1/users, GET /v1/builds,
+            GET /v1/apps/{id}/appInfos, GET /v1/appInfos/{id}/appInfoLocalizations, PATCH /v1/appInfoLocalizations/{id},
             GET/POST/PATCH /v1/betaGroups, GET /v1/betaGroups/{id}/betaTesters, POST /v1/betaTesters, POST /v1/betaTesterInvitations,
             GET /v1/builds/{id}/betaBuildLocalizations, POST/PATCH /v1/betaBuildLocalizations,
             GET/POST/DELETE /v1/certificates,
@@ -193,6 +194,7 @@ jobs:
             asc.py whats-new <bundle id> <version> <build> <テキストファイル>
                                                      そのビルドの「テストの内容」（TestFlight アプリに出る説明）を書き込む
             asc.py check-ids <bundle id>             Bundle ID の登録と App Store Connect のアプリ記録の有無を表示
+            asc.py app-name <bundle id> <新しい名前>   App Store に出るアプリ名を直す（主言語のローカライズ。審査前の版だけ変えられる）
             asc.py status <bundle id> <platform>     最新ビルドの処理・配信の状態と、テスターの状態を日本語で表示
                                                      （GITHUB_STEP_SUMMARY があれば実行結果のまとめにも書く。メールアドレスは出さない）
 
@@ -919,6 +921,41 @@ jobs:
                       f.write("\n".join(lines) + "\n")
 
 
+          def cmd_app_name(bundle_id, new_name):
+              """アプリ記録を作る時の打ち間違いを直す。名前は「App 情報」の主言語ローカライズにある。"""
+              new_name = new_name.strip()
+              if not new_name:
+                  die("新しい名前が空")
+              q = urllib.parse.urlencode({"filter[bundleId]": bundle_id, "fields[apps]": "bundleId,name,primaryLocale"})
+              _, body = api("GET", f"/v1/apps?{q}")
+              apps = [a for a in body.get("data", []) if a["attributes"].get("bundleId") == bundle_id]
+              if not apps:
+                  die(f"App Store Connect に Bundle ID {bundle_id} のアプリが無い")
+              aid = apps[0]["id"]
+              primary = apps[0]["attributes"].get("primaryLocale")
+              print(f"今の名前: {apps[0]['attributes'].get('name')}（主言語 {primary}）")
+              _, infos = api("GET", f"/v1/apps/{aid}/appInfos")
+              # 公開済み（READY_FOR_DISTRIBUTION）以外が編集できる版
+              editable = [i for i in infos.get("data", [])
+                          if (i["attributes"].get("state") or i["attributes"].get("appStoreState")) not in ("READY_FOR_DISTRIBUTION", "READY_FOR_SALE")]
+              if not editable:
+                  die("編集できる App 情報が無い（公開中の名前は次の版の審査でしか変えられない）")
+              changed = 0
+              for info in editable:
+                  _, locs = api("GET", f"/v1/appInfos/{info['id']}/appInfoLocalizations")
+                  for loc in locs.get("data", []):
+                      if loc["attributes"].get("locale") != primary or loc["attributes"].get("name") == new_name:
+                          continue
+                      status, res = api("PATCH", f"/v1/appInfoLocalizations/{loc['id']}", {"data": {
+                          "type": "appInfoLocalizations", "id": loc["id"], "attributes": {"name": new_name}}}, tolerate=True)
+                      if status >= 300:
+                          if status == 409 and "already" in str(res).lower():
+                              die(f"「{new_name}」は他のアプリが使っていて付けられない。別の名前にする")
+                          die(f"名前を変えられなかった（HTTP {status}）: {str(res)[:1000]}")
+                      changed += 1
+              print(f"名前を「{new_name}」にした" if changed else f"名前はすでに「{new_name}」")
+
+
           def main():
               if len(sys.argv) < 2:
                   print(__doc__)
@@ -931,6 +968,7 @@ jobs:
                   "decrypt-key": (cmd_decrypt_key, 2), "encrypt-key": (cmd_encrypt_key, 2), "upload": (cmd_upload, 5),
                   "profile-devid": (cmd_profile_devid, 5), "bundle-id": (cmd_bundle_id, 3),
                   "testers": (cmd_testers, 1), "check-ids": (cmd_check_ids, 1), "whats-new": (cmd_whats_new, 4), "status": (cmd_status, 2),
+                  "app-name": (cmd_app_name, 2),
               }
               if cmd not in table or len(args) != table[cmd][1]:
                   print(__doc__)
