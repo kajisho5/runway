@@ -168,7 +168,7 @@ jobs:
 
           API のエンドポイントとフィールドは Apple の App Store Connect API（OpenAPI 仕様）に準拠：
             GET /v1/apps, GET /v1/users, GET /v1/builds,
-            GET /v1/apps/{id}/appInfos, GET /v1/appInfos/{id}/appInfoLocalizations, PATCH /v1/appInfoLocalizations/{id},
+            PATCH /v1/apps/{id}, GET /v1/apps/{id}/appInfos, GET /v1/appInfos/{id}/appInfoLocalizations, PATCH /v1/appInfoLocalizations/{id},
             GET/POST/PATCH /v1/betaGroups, GET /v1/betaGroups/{id}/betaTesters, POST /v1/betaTesters, POST /v1/betaTesterInvitations,
             GET /v1/builds/{id}/betaBuildLocalizations, POST/PATCH /v1/betaBuildLocalizations,
             GET/POST/DELETE /v1/certificates,
@@ -198,6 +198,8 @@ jobs:
                                                      そのビルドの「テストの内容」（TestFlight アプリに出る説明）を書き込む
             asc.py check-ids <bundle id>             Bundle ID の登録と App Store Connect のアプリ記録の有無を表示
             asc.py app-name <bundle id> <新しい名前>   App Store に出るアプリ名を直す（主言語のローカライズ。審査前の版だけ変えられる）
+            asc.py app-bundle-id <今の bundle id> <正しい bundle id>
+                                                     アプリ記録の Bundle ID を付け替える（ビルドを 1 度も送っていない時だけ Apple が許す）
             asc.py status <bundle id> <platform>     最新ビルドの処理・配信の状態と、テスターの状態を日本語で表示
                                                      （GITHUB_STEP_SUMMARY があれば実行結果のまとめにも書く。メールアドレスは出さない）
 
@@ -964,6 +966,26 @@ jobs:
               print(f"名前を「{new_name}」にした" if changed else f"名前はすでに「{new_name}」")
 
 
+          def cmd_app_bundle_id(old_bundle_id, new_bundle_id):
+              """アプリ記録を作る時に別の Bundle ID を選んでしまった場合に付け替える。"""
+              q = urllib.parse.urlencode({"filter[bundleId]": old_bundle_id, "fields[apps]": "bundleId,name"})
+              _, body = api("GET", f"/v1/apps?{q}")
+              apps = [a for a in body.get("data", []) if a["attributes"].get("bundleId") == old_bundle_id]
+              if not apps:
+                  q = urllib.parse.urlencode({"filter[bundleId]": new_bundle_id, "fields[apps]": "bundleId,name"})
+                  _, done = api("GET", f"/v1/apps?{q}")
+                  if any(a["attributes"].get("bundleId") == new_bundle_id for a in done.get("data", [])):
+                      print(f"アプリ記録はすでに {new_bundle_id}")
+                      return
+                  die(f"App Store Connect に Bundle ID {old_bundle_id} のアプリが無い")
+              aid = apps[0]["id"]
+              status, res = api("PATCH", f"/v1/apps/{aid}", {"data": {
+                  "type": "apps", "id": aid, "attributes": {"bundleId": new_bundle_id}}}, tolerate=True)
+              if status >= 300:
+                  die(f"Bundle ID を付け替えられなかった（HTTP {status}。ビルドを送った後は変えられない）: {str(res)[:1000]}")
+              print(f"アプリ記録「{apps[0]['attributes'].get('name')}」の Bundle ID を {old_bundle_id} → {new_bundle_id} にした")
+
+
           def main():
               if len(sys.argv) < 2:
                   print(__doc__)
@@ -976,7 +998,7 @@ jobs:
                   "decrypt-key": (cmd_decrypt_key, 2), "encrypt-key": (cmd_encrypt_key, 2), "upload": (cmd_upload, 5),
                   "profile-devid": (cmd_profile_devid, 5), "bundle-id": (cmd_bundle_id, 3),
                   "testers": (cmd_testers, 1), "check-ids": (cmd_check_ids, 1), "whats-new": (cmd_whats_new, 4), "status": (cmd_status, 2),
-                  "app-name": (cmd_app_name, 2),
+                  "app-name": (cmd_app_name, 2), "app-bundle-id": (cmd_app_bundle_id, 2),
               }
               if cmd not in table or len(args) != table[cmd][1]:
                   print(__doc__)

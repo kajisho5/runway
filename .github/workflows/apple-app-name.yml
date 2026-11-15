@@ -1,32 +1,41 @@
-# App Store Connect のアプリ名を直す（アプリ記録を作る時の打ち間違い用。runway の Actions から手動実行）。
-# Claude からも API で実行できる。公開中のアプリの名前は次の版の審査でしか変えられない。
+# App Store Connect のアプリ記録の打ち間違いを直す（runway の Actions から手動実行。Claude からも API で実行できる）。
+# - 名前：公開中のアプリは次の版の審査でしか変えられない
+# - Bundle ID：ビルドを 1 度も送っていないアプリ記録だけ付け替えられる（Apple の制限）
 name: apple-app-name
 
 on:
   workflow_dispatch:
     inputs:
       bundle_id:
-        description: "Bundle ID（例: com.seventhwell.MyApp）"
+        description: "今のアプリ記録の Bundle ID"
         required: true
       name:
-        description: "新しいアプリ名"
-        required: true
+        description: "正しいアプリ名（空なら名前は変えない）"
+        required: false
+      new_bundle_id:
+        description: "正しい Bundle ID（付け替える時だけ）"
+        required: false
 
 permissions:
   contents: read
 
 jobs:
-  rename:
+  fix:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      BUNDLE_ID: ${{ inputs.bundle_id }}
+      NEW_BUNDLE_ID: ${{ inputs.new_bundle_id }}
+      APP_NAME: ${{ inputs.name }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
     steps:
       - uses: actions/checkout@v6
       - run: pip install --quiet pyjwt cryptography
+      - name: Bundle ID を付け替える
+        if: inputs.new_bundle_id != ''
+        run: python3 scripts/asc.py app-bundle-id "$BUNDLE_ID" "$NEW_BUNDLE_ID"
       - name: アプリ名を直す
-        run: python3 scripts/asc.py app-name "$BUNDLE_ID" "$APP_NAME"
-        env:
-          BUNDLE_ID: ${{ inputs.bundle_id }}
-          APP_NAME: ${{ inputs.name }}
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+        if: inputs.name != ''
+        run: python3 scripts/asc.py app-name "${NEW_BUNDLE_ID:-$BUNDLE_ID}" "$APP_NAME"

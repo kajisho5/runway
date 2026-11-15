@@ -25,7 +25,7 @@
 .github/workflows/selfcheck.yml         runway 自身の整合性チェック
 scripts/asc.py                          App Store Connect API ツール（apple-testflight.yml / mac-notarize.yml に埋め込み済み）
 .github/workflows/apple-bundle-id.yml   新しいアプリの Bundle ID を API で登録（runway の Actions から手動実行）
-.github/workflows/apple-app-name.yml    App Store Connect のアプリ名を直す（アプリ記録を作る時の打ち間違い用。手動実行）
+.github/workflows/apple-app-name.yml    アプリ記録の名前・Bundle ID の打ち間違いを直す（手動実行。Bundle ID はビルド送信前だけ）
 scripts/embed.py                        asc.py を編集したら実行して埋め込みを更新する
 scripts/sync-secrets.sh / .ps1          sync-secrets を PC から行う場合（gh CLI が必要）
 repos.txt                               Secrets の配布先
