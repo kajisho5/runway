@@ -18,3 +18,4 @@ kajisho5/petacal
 kajisho5/kenka-goma
 kajisho5/holder-link
 kajisho5/genba-tokei
+kajisho5/zero-fb-pure
